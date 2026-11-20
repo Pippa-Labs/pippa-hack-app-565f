@@ -143,7 +143,7 @@ def test_the_manifest_is_valid():
     app = App()
     assert app.manifest.app_id == "hack.app_565f"
     assert {o.id for o in app.manifest.outcomes} == {
-        "journey.plan", "transport.live", "transportation_fares.cheapest", "outdoors.walk", "safety.help",
+        "journey.plan", "transport.live", "transportation.fares", "outdoors.walk", "safety.help",
     }
 
 
@@ -312,29 +312,29 @@ def test_step_free_without_a_place_needs_input(net):
         call("transport.live", {"task": "step_free"})
 
 
-# --- transportation_fares.cheapest ---
+# --- transportation.fares ---
 def test_best_ticket_for_a_week_in_zones_1_to_3(net):
-    result = call("transportation_fares.cheapest", {"task": "best_ticket", "zones": "1-3", "stay_days": 7})
+    result = call("transportation.fares", {"task": "best_ticket", "zones": "1-3", "stay_days": 7})
     assert result.data["cost_gbp"] == 52.5
     assert result.data["best_option"] == "Pay as you go with contactless"
     assert "at most £52.50" in result.data["headline"]
 
 
 def test_best_ticket_adds_the_oyster_fee_when_there_is_no_card(net):
-    result = call("transportation_fares.cheapest", {"task": "best_ticket", "zones": "1-3", "card": "none"})
+    result = call("transportation.fares", {"task": "best_ticket", "zones": "1-3", "card": "none"})
     assert result.data["cost_gbp"] == 59.5
     assert result.data["best_option"] == "Pay as you go with Oyster"
 
 
 def test_best_ticket_for_buses_only(net):
-    result = call("transportation_fares.cheapest", {"task": "best_ticket", "bus_only": "true"})
+    result = call("transportation.fares", {"task": "best_ticket", "bus_only": "true"})
     assert result.data["cost_gbp"] == 26.1
     assert "on buses" in result.data["headline"]
 
 
 def test_best_ticket_with_unknown_zones_needs_input(net):
     with pytest.raises(l1_http.NeedsInput) as failure:
-        call("transportation_fares.cheapest", {"task": "best_ticket", "zones": "zone 9"})
+        call("transportation.fares", {"task": "best_ticket", "zones": "zone 9"})
     assert "1-2, 1-3, 1-4 or 1-6" in failure.value.user_message
 
 
@@ -345,7 +345,7 @@ def test_single_fare_expands_a_hub_station(net):
         "/StopPoint/HUBOXC": _stop("Oxford Circus Underground Station", {}, ("940GZZLUOXC",)),
         "/FareTo/": _fare_sections("2.90", "1.90"),
     })
-    result = call("transportation_fares.cheapest", {"from_place": "Oxford Circus", "to_place": "Brixton"})
+    result = call("transportation.fares", {"from_place": "Oxford Circus", "to_place": "Brixton"})
     assert result.data["task"] == "single_fare"
     assert result.data["cost_gbp"] == 1.9
     assert result.data["best_option"] == "Pay as you go (Off Peak)"
@@ -358,14 +358,14 @@ def test_single_fare_can_ask_for_the_peak_price(net):
         "/StopPoint/Search/": _search("940GZZLUOXC", "Oxford Circus Underground Station"),
         "/FareTo/": _fare_sections("2.90", "1.90"),
     })
-    result = call("transportation_fares.cheapest",
+    result = call("transportation.fares",
                   {"task": "single_fare", "from_place": "Oxford", "to_place": "Brixton", "peak": "true"})
     assert result.data["cost_gbp"] == 2.9
 
 
 def test_single_fare_without_a_destination_needs_input(net):
     with pytest.raises(l1_http.NeedsInput):
-        call("transportation_fares.cheapest", {"task": "single_fare", "from_place": "Oxford Circus"})
+        call("transportation.fares", {"task": "single_fare", "from_place": "Oxford Circus"})
 
 
 def test_single_fare_with_no_published_fare_is_not_found(net):
@@ -374,11 +374,11 @@ def test_single_fare_with_no_published_fare_is_not_found(net):
         "/FareTo/": [],
     })
     with pytest.raises(l1_http.NotFound):
-        call("transportation_fares.cheapest", {"task": "single_fare", "from_place": "A", "to_place": "B"})
+        call("transportation.fares", {"task": "single_fare", "from_place": "A", "to_place": "B"})
 
 
 def test_airport_fare_for_heathrow_without_a_start(net):
-    result = call("transportation_fares.cheapest", {"task": "airport", "airport": "heathrow"})
+    result = call("transportation.fares", {"task": "airport", "airport": "heathrow"})
     assert result.data["cost_gbp"] == 15.5
     assert result.data["best_option"] == "Elizabeth line from zone 1"
     assert result.data["as_of"] == "2026-11"
@@ -390,7 +390,7 @@ def test_airport_fare_uses_a_live_fare_from_a_named_start(net):
         "/StopPoint/Search/Heathrow": _search("940GZZLUHR3", "Heathrow Terminals 2 & 3"),
         "/FareTo/": _fare_sections("6.40", "3.50"),
     })
-    result = call("transportation_fares.cheapest",
+    result = call("transportation.fares",
                   {"airport": "heathrow", "from_place": "Oxford Circus"})
     assert result.data["cost_gbp"] == 6.4
     assert result.data["best_option"] == "Pay as you go"
@@ -402,13 +402,13 @@ def test_airport_fare_falls_back_to_the_table_when_the_live_fare_fails(net):
         "/StopPoint/Search/": _search("940GZZLUOXC", "Oxford Circus Underground Station"),
         "/FareTo/": http_error(404),
     })
-    result = call("transportation_fares.cheapest", {"airport": "LHR", "from_place": "Oxford Circus"})
+    result = call("transportation.fares", {"airport": "LHR", "from_place": "Oxford Circus"})
     assert result.data["cost_gbp"] == 15.5
 
 
 def test_unknown_airport_needs_input(net):
     with pytest.raises(l1_http.NeedsInput):
-        call("transportation_fares.cheapest", {"task": "airport", "airport": "Narnia"})
+        call("transportation.fares", {"task": "airport", "airport": "Narnia"})
 
 
 # --- journey.plan: route ---
@@ -612,7 +612,7 @@ def test_crime_rate_limit_is_retryable(net):
 # --- Picked by name with nothing extracted ---
 def test_picked_by_name_with_empty_inputs_picks_a_default_task(net):
     expected = {
-        "transportation_fares.cheapest": "best_ticket",
+        "transportation.fares": "best_ticket",
         "transport.live": "status",
         "outdoors.walk": "weather",
         "safety.help": "help",

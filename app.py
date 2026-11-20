@@ -28,7 +28,7 @@ MANIFEST_PATH = Path(__file__).with_name("manifest.yaml")
 
 # --- Outcome -> sub-task -> entry function (each takes inputs and now) ---
 ROUTES = {
-    "transportation_fares.cheapest": {
+    "transportation.fares": {
         "best_ticket": l2_fare_advisor.best_ticket,
         "single_fare": l2_fare_advisor.single_fare,
         "airport": l2_fare_advisor.airport_fare,
@@ -81,7 +81,7 @@ def _is_late(clock: str) -> bool:
 def _default_task(outcome_id: str, inputs: dict) -> str:
     """Infer the sub-task from which inputs are present."""
     has = lambda name: inputs.get(name) not in (None, "")  # noqa: E731
-    if outcome_id == "transportation_fares.cheapest":
+    if outcome_id == "transportation.fares":
         if has("airport"):
             return "airport"
         return "single_fare" if has("from_place") and has("to_place") else "best_ticket"

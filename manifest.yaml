@@ -169,7 +169,7 @@ outcomes:
         description: The station, stop or area the answer is about.
 
   # ── Transportation fares ────────────────────────────────────────────────────────────────
-  - id: transportation_fares.cheapest
+  - id: transportation.fares
     summary: London transportation fares, the cheapest way to pay for the Tube, bus and trains, a single fare between two stations, or the fare to an airport
     example_phrases:
       - cheapest way to pay for the tube
