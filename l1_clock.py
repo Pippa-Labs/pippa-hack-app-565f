@@ -51,8 +51,8 @@ def _meridiem(text: str | None) -> str | None:
     return text.replace(".", "") if text else None
 
 
-def _hours_meant(hour: int, minute: int, meridiem: str | None, evening: bool) -> list[int]:
-    """Every 24-hour reading of the hour; a bare 1-11 could be morning or evening."""
+def _hours_meant(hour: int, minute: int, meridiem: str | None, evening: bool, night: bool) -> list[int]:
+    """Every 24-hour reading of the hour; bare 1-11 may be am or pm, bare 12 at night is 00."""
     if not 0 <= minute <= 59:
         raise ValueError(minute)
     if meridiem == "fixed":
@@ -63,8 +63,11 @@ def _hours_meant(hour: int, minute: int, meridiem: str | None, evening: bool) ->
         return [hour % 12 + (12 if meridiem == "pm" else 0)]
     if not 0 <= hour <= 23:
         raise ValueError(hour)
+    if night and hour == 12:
+        return [0]
     if 1 <= hour <= 11:
-        return [hour + 12] if evening else [hour, hour + 12]
+        # late at night a bare hour can still mean the small hours, so keep both readings
+        return [hour + 12] if evening and not night else [hour, hour + 12]
     return [hour]
 
 
@@ -74,11 +77,11 @@ def _next_at(local_now: datetime, hour: int, minute: int) -> datetime:
     return moment + timedelta(days=1) if local_now - moment > STALE_AFTER else moment
 
 
-def parse_clock(text, now: datetime, *, evening: bool = False) -> datetime:
+def parse_clock(text, now: datetime, *, evening: bool = False, night: bool = False) -> datetime:
     """The next London time at or after now (or within the last hour) that the text names."""
     try:
         hour, minute, meridiem = _read(str(text or ""))
-        hours = _hours_meant(hour, minute, meridiem, evening)
+        hours = _hours_meant(hour, minute, meridiem, evening, night)
     except ValueError:
         raise refuse(NeedsInput, UNREADABLE, f"unreadable clock time {text!r}") from None
     local_now = now.astimezone(LONDON)

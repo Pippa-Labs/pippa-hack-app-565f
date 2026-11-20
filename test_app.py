@@ -308,14 +308,14 @@ def test_step_free_mentions_a_lift_fault(net):
     _step_free_routes(net, [{"stationUniqueId": "940GZZLUOXC", "message": "Oxford Circus: Lift 3 out of service"}])
     result = call("transport.live", {"task": "step_free", "place": "Oxford Circus"})
     assert result.data["place"] == "Oxford Circus"
-    assert "out of service" in result.data["headline"]
+    assert "lift out at" in result.data["headline"]
     assert "1 lift fault(s) reported now" in result.data["key_points"]
 
 
 def test_step_free_ignores_faults_at_other_stations(net):
     _step_free_routes(net, [{"stationUniqueId": "940GZZLUBXN", "message": "Brixton: Lift 1 out of service"}])
     result = call("transport.live", {"task": "step_free", "place": "Oxford Circus"})
-    assert result.data["headline"] == "Oxford Circus is step-free via lift; no lift faults reported."
+    assert result.data["headline"] == "Step-free: yes, Oxford Circus. No lift faults reported."
 
 
 def test_step_free_without_a_place_needs_input(net):

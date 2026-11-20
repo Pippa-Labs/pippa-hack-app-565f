@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import re
+from datetime import date, datetime, timedelta
 from typing import NamedTuple
 
 import l1_geo
 import l1_weather
+from l1_http import NeedsInput, refuse
 
 CENTRAL_LONDON = {"lat": 51.5074, "lon": -0.1278, "label": "central London"}
 LONDON = l1_weather.LONDON
@@ -15,6 +17,10 @@ BAD_AIR = {"very poor", "extremely poor"}
 PARK_RADIUS_KM = 8.0
 SOURCE = "Open-Meteo"
 MAX_POINTS = 3
+MAX_DAYS_AHEAD = 6
+GUSTY_KMH = 40
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+IN_DAYS = re.compile(r"in (\d+) days?")
 
 
 # --- Curated London places: big parks for walks, viewpoints for sunsets ---
@@ -142,18 +148,84 @@ def _present(points: list) -> list[str]:
     return [point for point in points if point]
 
 
+# --- Day the user asked about ---
+def _days_ahead(text: str, today: date) -> int | None:
+    """Days from today for tomorrow, a weekday, 'in N days' or YYYY-MM-DD; None if unreadable."""
+    if text == "tomorrow":
+        return 1
+    weekday = next((i for i, name in enumerate(WEEKDAYS) if text in (name, name[:3])), None)
+    if weekday is not None:
+        return (weekday - today.weekday()) % 7
+    match = IN_DAYS.fullmatch(text)
+    if match:
+        return int(match.group(1))
+    try:
+        return (date.fromisoformat(text) - today).days
+    except ValueError:
+        return None
+
+
+def _target_day(value, now: datetime) -> date | None:
+    """The London date asked about, None for today; NeedsInput when unreadable or too far ahead."""
+    text = "" if _blank(value) else str(value).strip().lower()
+    if text in ("", "today"):
+        return None
+    today = now.astimezone(LONDON).date()
+    ahead = _days_ahead(text, today)
+    if ahead is None or not 0 <= ahead <= MAX_DAYS_AHEAD:
+        raise refuse(NeedsInput, l1_weather.TOO_FAR, f"day {text!r} unreadable or too far")
+    return None if ahead == 0 else today + timedelta(days=ahead)
+
+
+# --- Weather watch: one chosen day ---
+def _day_outlook(rows: list[dict]) -> str:
+    """'rain likely from 14:00', 'snow likely from 09:00' or 'dry'."""
+    wet = next((row for row in rows if _is_wet(row)), None)
+    if wet is None:
+        return "dry"
+    kind = "snow" if (wet["snow_cm"] or 0) > 0 else "rain"
+    return f"{kind} likely from {_clock(wet['time'])}"
+
+
+def _gust_point(rows: list[dict]) -> str | None:
+    gust = _top([row["gust_kmh"] for row in rows])
+    return f"Gusts to {round(gust)} km/h" if gust is not None and gust >= GUSTY_KMH else None
+
+
+def _day_watch(point: dict, day: date, now: datetime) -> dict:
+    """Daytime outlook (08:00-22:00) for one date; no air quality, which is only for today."""
+    weather = l1_weather.day_forecast(point["lat"], point["lon"], day, now)
+    rows = weather["hours"]
+    high = _top([row["temp_c"] for row in rows])
+    temperature = f", {round(high)}°C max" if high is not None else ""
+    weekday = WEEKDAYS[day.weekday()].capitalize()
+    result = {
+        "headline": f"{weekday} in {point['label']}: {_day_outlook(rows)}{temperature}.",
+        "key_points": _present([_rain_point(rows), _gust_point(rows),
+                                f"Sunset {_clock(weather['sunset'])}"])[:MAX_POINTS],
+        "source": SOURCE,
+    }
+    if high is not None:
+        result["temperature_c"] = round(high, 1)
+    return result
+
+
 # --- Weather watch entry ---
 def weather_watch(inputs: dict, now: datetime) -> dict:
-    """Conditions now, the first notable change and the main numbers for a window."""
+    """Conditions for the next hours, or the daytime outlook for a chosen day up to 6 days ahead."""
+    day = _target_day(inputs.get("day"), now)
     point = _point(inputs)
+    if day is not None:
+        return _day_watch(point, day, now)
     hours = _clamp_int(inputs.get("hours"), 1, 24, 12)
     weather, air = l1_weather.forecast_and_air(point["lat"], point["lon"], hours, now)
     rows = weather["hours"]
     first = rows[0]
     temperature = f", {round(first['temp_c'])}°C" if first["temp_c"] is not None else ""
-    change = _first_change(rows) or f"no big change for {hours} h"
+    window = "Next hour" if hours == 1 else f"Next {hours} hours"
+    change = _first_change(rows) or "no big change"
     result = {
-        "headline": f"{_sentence(first['description'])}{temperature} in {point['label']}; {change}.",
+        "headline": f"{window}: {first['description']}{temperature} in {point['label']}; {change}.",
         "key_points": _present([_rain_point(rows), _sunset_point(weather, now), _air_point(air)])[:MAX_POINTS],
         "source": SOURCE,
     }

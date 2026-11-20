@@ -11,7 +11,7 @@ from l1_http import NeedsInput, refuse
 
 STATION_SUFFIX = re.compile(r"\s+(Underground|Rail|DLR|Overground|Elizabeth line)?\s*Station$", re.IGNORECASE)
 YES = "yes"
-TFL_ADVICE = "Call TfL 0343 222 1234 before you travel."
+TFL_ADVICE = "Call TfL 0343 222 1234."
 
 
 # --- Small helpers ---
@@ -79,14 +79,15 @@ def station_access(station_name: str) -> dict:
 
 # --- Headline wording ---
 def _headline(access: dict) -> str:
-    name, state, faults = access["name"], access["step_free"], access["faults"]
+    """Plain verdict first, so it reads well aloud: 'Step-free: yes, Oxford Circus.'"""
+    name, state = access["name"], access["step_free"]
     if state == "unknown":
-        return f"TfL doesn't say if {name} is step-free; check before you go."
+        return f"Step-free: not stated for {name}; ask staff."
     if state == "no":
-        return f"{name} has no step-free access via lift. {TFL_ADVICE}"
-    if faults:
-        return f"{name} is step-free, but a lift is out of service. {TFL_ADVICE}"
-    return f"{name} is step-free via lift; no lift faults reported."
+        return f"Step-free: no lift at {name}. {TFL_ADVICE}"
+    if state == "partial":
+        return f"Step-free: no, lift out at {name}. {TFL_ADVICE}"
+    return f"Step-free: yes, {name}. No lift faults reported."
 
 
 # --- Entry: step_free_check ---

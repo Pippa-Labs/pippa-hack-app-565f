@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -15,6 +15,9 @@ LONDON = ZoneInfo("Europe/London")
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 AIR_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 SERVICE = "Open-Meteo"
+MAX_FORECAST_DAYS = 7
+DAY_START_HOUR, DAY_END_HOUR = 8, 22
+TOO_FAR = "I can forecast up to 6 days ahead."
 
 # --- WMO weather codes in plain words ---
 WEATHER_CODES = {
@@ -61,57 +64,85 @@ def _pick(values: list, index: int):
 
 
 # --- Forecast ---
-def forecast(lat: float, lon: float, now: datetime, hours: int = 12) -> dict:
-    """Hourly weather from the current hour, plus sunrise/sunset (next_sunrise after dark)."""
+def _fetch_forecast(lat: float, lon: float, days: int) -> tuple[dict, dict]:
+    """Open-Meteo hourly and daily columns for `days` London days from today."""
     query = urlencode({
         "latitude": lat, "longitude": lon, "hourly": HOURLY_FIELDS,
-        "daily": "sunrise,sunset", "timezone": "Europe/London", "forecast_days": 2,
+        "daily": "sunrise,sunset", "timezone": "Europe/London",
+        "forecast_days": max(1, min(MAX_FORECAST_DAYS, days)),
     })
     data = l1_http.get_json(f"{FORECAST_URL}?{query}", SERVICE)
     hourly = data.get("hourly") if isinstance(data, dict) else None
     daily = data.get("daily") if isinstance(data, dict) else None
     if not hourly or not hourly.get("time") or not daily or not daily.get("sunrise"):
         raise l1_http.refuse(l1_http.NotFound, "The weather service had no forecast for that spot.", "empty forecast")
-    return _shape_forecast(hourly, daily, now, hours)
+    return hourly, daily
 
 
-def _shape_forecast(hourly: dict, daily: dict, now: datetime, hours: int) -> dict:
-    """Turn Open-Meteo column lists into hour dicts and sun times."""
+def _row(hourly: dict, times: list[datetime], i: int) -> dict:
+    """One hour of Open-Meteo columns as a dict."""
+    code = _pick(hourly["weather_code"], i)
+    return {
+        "time": times[i],
+        "temp_c": _pick(hourly["temperature_2m"], i),
+        "feels_c": _pick(hourly["apparent_temperature"], i),
+        "rain_chance": _pick(hourly["precipitation_probability"], i),
+        "rain_mm": _pick(hourly["precipitation"], i),
+        "snow_cm": _pick(hourly.get("snowfall", []), i),
+        "wind_kmh": _pick(hourly["wind_speed_10m"], i),
+        "gust_kmh": _pick(hourly["wind_gusts_10m"], i),
+        "uv": _pick(hourly["uv_index"], i),
+        "code": code,
+        "description": WEATHER_CODES.get(code, "unsettled weather"),
+    }
+
+
+def forecast(lat: float, lon: float, now: datetime, hours: int = 12, forecast_days: int = 2) -> dict:
+    """Hourly weather from the current hour, plus sunrise/sunset (next_sunrise after dark)."""
+    hourly, daily = _fetch_forecast(lat, lon, forecast_days)
     times = [_local(t) for t in hourly["time"]]
     start = _hour_index(times, now)
-    rows = []
-    for i in range(start, min(start + hours, len(times))):
-        code = _pick(hourly["weather_code"], i)
-        rows.append({
-            "time": times[i],
-            "temp_c": _pick(hourly["temperature_2m"], i),
-            "feels_c": _pick(hourly["apparent_temperature"], i),
-            "rain_chance": _pick(hourly["precipitation_probability"], i),
-            "rain_mm": _pick(hourly["precipitation"], i),
-            "snow_cm": _pick(hourly.get("snowfall", []), i),
-            "wind_kmh": _pick(hourly["wind_speed_10m"], i),
-            "gust_kmh": _pick(hourly["wind_gusts_10m"], i),
-            "uv": _pick(hourly["uv_index"], i),
-            "code": code,
-            "description": WEATHER_CODES.get(code, "unsettled weather"),
-        })
-    result = {"hours": rows}
+    result = {"hours": [_row(hourly, times, i) for i in range(start, min(start + hours, len(times)))]}
     result.update(_sun_times(daily, now))
     return result
+
+
+def day_forecast(lat: float, lon: float, day: date, now: datetime) -> dict:
+    """Daytime hours (08:00-22:00) and sun times for one London date, today up to 6 days ahead."""
+    ahead = (day - now.astimezone(LONDON).date()).days
+    if not 0 <= ahead < MAX_FORECAST_DAYS:
+        raise l1_http.refuse(l1_http.NeedsInput, TOO_FAR, f"{day} is {ahead} days ahead")
+    hourly, daily = _fetch_forecast(lat, lon, ahead + 1)
+    times = [_local(t) for t in hourly["time"]]
+    rows = [_row(hourly, times, i) for i, moment in enumerate(times)
+            if moment.date() == day and DAY_START_HOUR <= moment.hour < DAY_END_HOUR]
+    if not rows:
+        raise l1_http.refuse(l1_http.NotFound, "The weather service had no forecast for that day.", f"{day} missing")
+    sunrise, sunset = _sun_for(daily, day)
+    return {"hours": rows, "sunrise": sunrise, "sunset": sunset}
+
+
+def _sun_by_date(daily: dict) -> dict[date, tuple[datetime, datetime]]:
+    """(sunrise, sunset) keyed by London date."""
+    return {_local(rise).date(): (_local(rise), _local(set_)) for rise, set_ in zip(daily["sunrise"], daily["sunset"])}
+
+
+def _sun_for(daily: dict, day: date) -> tuple[datetime, datetime]:
+    """Sunrise and sunset on one London date."""
+    sun = _sun_by_date(daily).get(day)
+    if sun is None:
+        raise l1_http.refuse(l1_http.NotFound, "The weather service had no sun times for that day.", f"{day} missing from daily")
+    return sun
 
 
 def _sun_times(daily: dict, now: datetime) -> dict:
     """Sunrise and sunset for now's London date; next_sunrise once the sun has set."""
     local_now = now.astimezone(LONDON)
-    sunrises = [_local(t) for t in daily["sunrise"]]
-    sunsets = [_local(t) for t in daily["sunset"]]
-    today = local_now.date()
-    day = next((i for i, s in enumerate(sunrises) if s.date() == today), None)
-    if day is None:
-        raise l1_http.refuse(l1_http.NotFound, "The weather service had no sun times for today.", "today missing from daily")
-    sun = {"sunrise": sunrises[day], "sunset": sunsets[day]}
-    if local_now > sunsets[day] and day + 1 < len(sunrises):
-        sun["next_sunrise"] = sunrises[day + 1]
+    sunrise, sunset = _sun_for(daily, local_now.date())
+    sun = {"sunrise": sunrise, "sunset": sunset}
+    tomorrow = _sun_by_date(daily).get(local_now.date() + timedelta(days=1))
+    if local_now > sunset and tomorrow:
+        sun["next_sunrise"] = tomorrow[0]
     return sun
 
 

@@ -24,9 +24,12 @@ NIGHT_STARTS = time(23, 0)
 NIGHT_ENDS = time(5, 0)
 DEFAULT_NIGHT_DEPARTURE = time(23, 30)
 NIGHT_TUBE_AFTER = time(0, 30)
+AFTER_DARK_FROM = time(18, 0)  # from here to NIGHT_ENDS a bare "12:30" means just after midnight
 NIGHT_BUS_NOTE = "Night buses run every night"
 NIGHT_TUBE_NOTE = "Night Tube runs Friday and Saturday nights"
 LIFT_OUT = "Lift out at {}"
+MAX_HEADLINE_WORDS = 15
+MAX_POINTS = 3
 
 
 # --- Inputs ---
@@ -62,12 +65,18 @@ def _lift_faults() -> list[dict]:
         return []
 
 
-def lift_notes(faults: list[dict], journey: dict) -> list[str]:
-    """At most one point naming the stations in the journey's legs that have a lift out."""
+def lift_out_stations(faults: list[dict], journey: dict) -> str:
+    """'Bank and Morden' for stations in the journey's legs with a lift out, or ''."""
     summaries = " ".join(leg["summary"] for leg in journey["legs"]).lower()
     stations = (fault["message"].split(":")[0].strip() for fault in faults)
     names = list(dict.fromkeys(name for name in stations if name and name.lower() in summaries))
-    return [LIFT_OUT.format(" and ".join(names))] if names else []
+    return " and ".join(names)
+
+
+def lift_notes(faults: list[dict], journey: dict) -> list[str]:
+    """At most one point naming the stations in the journey's legs that have a lift out."""
+    stations = lift_out_stations(faults, journey)
+    return [LIFT_OUT.format(stations)] if stations else []
 
 
 # --- Planning ---
@@ -130,6 +139,22 @@ def times_point(journey: dict) -> str:
     return f"Leave {hhmm(journey['start'])}, arrive {hhmm(journey['arrival'])}"
 
 
+def _named_in(leg: dict, texts: list[str]) -> bool:
+    line = leg["line"]
+    return bool(line) and any(re.search(rf"\b{re.escape(line)}\b", text, re.IGNORECASE) for text in texts)
+
+
+def disruption_point(journey: dict) -> list[str]:
+    """'Northern line: disruption', naming the ride leg the disruption text mentions, else the first ride."""
+    texts, rides = journey["disruptions"], ride_legs(journey)
+    if not texts:
+        return []
+    if not rides:
+        return ["Disruption on this route"]
+    leg = next((leg for leg in rides if _named_in(leg, texts)), rides[0])
+    return [f"{vehicle_label(leg)}: disruption"]
+
+
 def line_problems(statuses: list[dict], journey: dict) -> list[str]:
     """'Central: Minor Delays' for each tube or rail line this journey uses that is not running well."""
     used = " ".join(f"{leg['line']} {leg['summary']}".lower() for leg in ride_legs(journey) if leg["mode"] != "bus")
@@ -138,22 +163,34 @@ def line_problems(statuses: list[dict], journey: dict) -> list[str]:
 
 
 # --- Entry: best route ---
+def route_headline(journey: dict, lead: str = "") -> str:
+    """'<lead>Victoria line, 25 min. Leave 14:40, arrive 15:05.', dropping the times past 15 words."""
+    short = f"{lead}{route_words(journey)}, {journey['duration_minutes']} min."
+    full = f"{short} {times_point(journey)}."
+    return full if len(full.split()) <= MAX_HEADLINE_WORDS else short
+
+
+def step_free_lead(lift_out_at: str) -> str:
+    return f"Step-free route, but lift out at {lift_out_at}: " if lift_out_at else "Step-free route: "
+
+
 def best_route(inputs: dict, now: datetime) -> dict:
     """Best journey between two places, optionally leaving at depart_at."""
     depart_at = clean(inputs.get("depart_at"))
     when = clock_time(depart_at, now, evening=is_evening(inputs)) if depart_at else None
     found = plan(inputs, now, when=when)
     journey = found["journey"]
-    points = [times_point(journey)]
-    if journey["fare_gbp"] is not None:
-        points.append(f"£{journey['fare_gbp']:.2f} with contactless")
-    if journey["disruptions"]:
-        points.append("Disruption reported on this route")
+    fare = [f"£{journey['fare_gbp']:.2f} with contactless"] if journey["fare_gbp"] is not None else []
     lifts = lift_notes(found["lift_faults"], journey)
-    points = lifts + points if found["preference"] == "step_free" else points + lifts
+    timing, disruption = [times_point(journey)], disruption_point(journey)
+    if found["preference"] == "step_free":
+        lead = step_free_lead(lift_out_stations(found["lift_faults"], journey))
+        points = lifts + timing + disruption + fare
+    else:
+        lead, points = "", timing + disruption + lifts + fare
     return {
-        "headline": f"{route_words(journey)}, {journey['duration_minutes']} min. {times_point(journey)}.",
-        "key_points": points,
+        "headline": route_headline(journey, lead),
+        "key_points": points[:MAX_POINTS],
         "source": SOURCE,
         **extras(journey),
     }
@@ -165,10 +202,16 @@ def is_night(moment: datetime) -> bool:
     return local >= NIGHT_STARTS or local < NIGHT_ENDS
 
 
+def asked_after_dark(now: datetime) -> bool:
+    local = now.astimezone(LONDON).time()
+    return local >= AFTER_DARK_FROM or local < NIGHT_ENDS
+
+
 def night_departure(inputs: dict, now: datetime) -> tuple[datetime, bool]:
     """When to leave, and whether 23:30 tonight was assumed."""
     if clean(inputs.get("depart_at")):
-        return clock_time(inputs["depart_at"], now, evening=True), False
+        when = l1_clock.parse_clock(clean(inputs["depart_at"]), now, evening=True, night=asked_after_dark(now))
+        return when, False
     if is_night(now):
         return now, False
     tonight = now.astimezone(LONDON).replace(hour=DEFAULT_NIGHT_DEPARTURE.hour,

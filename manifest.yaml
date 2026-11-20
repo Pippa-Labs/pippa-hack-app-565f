@@ -410,6 +410,12 @@ outcomes:
         description: >-
           The temperature in Celsius below which the user counts it as cold, if
           they named one. Leave this out entirely if they did not; never guess.
+      - name: day
+        type: string
+        required: false
+        description: >-
+          The day the user asks about, as they said it (tomorrow, saturday,
+          2026-11-25). Return an empty string if they did not say.
     output:
       - name: task
         type: string

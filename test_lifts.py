@@ -43,7 +43,7 @@ def test_step_free_route_puts_the_lift_fault_first(net):
     net.routes["/Disruptions/Lifts/v2"] = [CANARY_WHARF_FAULT]
     result = call("journey.plan", {**ROUTE, "preference": "step_free"})
     assert result.data["key_points"][0] == "Lift out at Canary Wharf"
-    assert result.data["headline"] == "Jubilee line, 29 min. Leave 14:40, arrive 15:09."
+    assert result.data["headline"] == "Step-free route, but lift out at Canary Wharf: Jubilee line, 29 min."
 
 
 def test_lift_fault_elsewhere_is_not_mentioned(net):
@@ -66,7 +66,7 @@ def test_step_free_no_headline_ends_with_tfl_advice(net):
         "/StopPoint/940GZZLUMDN": _stop("Morden Underground Station", {"AccessViaLift": "No"}),
     })
     result = call("transport.live", {"task": "step_free", "place": "Morden"})
-    assert result.data["headline"] == "Morden has no step-free access via lift. Call TfL 0343 222 1234 before you travel."
+    assert result.data["headline"] == "Step-free: no lift at Morden. Call TfL 0343 222 1234."
 
 
 def test_step_free_yes_headline_stays_short(net):
@@ -75,4 +75,4 @@ def test_step_free_yes_headline_stays_short(net):
         "/StopPoint/940GZZLUOXC": _stop("Oxford Circus Underground Station", {"Lifts": "2", "AccessViaLift": "Yes"}),
     })
     result = call("transport.live", {"task": "step_free", "place": "Oxford Circus"})
-    assert result.data["headline"] == "Oxford Circus is step-free via lift; no lift faults reported."
+    assert result.data["headline"] == "Step-free: yes, Oxford Circus. No lift faults reported."
