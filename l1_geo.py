@@ -15,6 +15,8 @@ LATLON = re.compile(r"^(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)$")
 POSTCODE = re.compile(r"^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$", re.IGNORECASE)
 OUTCODE = re.compile(r"^[A-Z]{1,2}\d[A-Z\d]?$", re.IGNORECASE)
 EARTH_RADIUS_KM = 6371.0088
+NOMINATIM = "https://nominatim.openstreetmap.org/search"
+GREATER_LONDON_BOX = "-0.52,51.70,0.34,51.28"  # west,north,east,south
 
 
 # --- Distance ---
@@ -54,9 +56,23 @@ def _place_point(text: str) -> dict:
     places = (l1_http.get_json(url, SERVICE).get("result") or [])
     london = [place for place in places if _in_london(place) and place.get("latitude") is not None]
     if not london:
-        raise _not_found(text, f"{SERVICE} has no London place for {text!r}")
+        return _landmark_point(text)
     best = london[0]
     return {"lat": best["latitude"], "lon": best["longitude"], "label": best["name_1"]}
+
+
+def _landmark_point(text: str) -> dict:
+    """Landmarks postcodes.io does not know (Trafalgar Square, Canary Wharf), via OpenStreetMap."""
+    url = f"{NOMINATIM}?" + urlencode({
+        "q": text, "format": "jsonv2", "limit": 5, "countrycodes": "gb",
+        "viewbox": GREATER_LONDON_BOX, "bounded": 1,
+    })
+    hits = l1_http.get_json(url, "OpenStreetMap Nominatim")
+    london = [hit for hit in hits if "Greater London" in hit.get("display_name", "")] if isinstance(hits, list) else []
+    if not london:
+        raise _not_found(text, f"no London place or landmark for {text!r}")
+    best = london[0]
+    return {"lat": float(best["lat"]), "lon": float(best["lon"]), "label": best.get("name") or text}
 
 
 # --- Resolve ---

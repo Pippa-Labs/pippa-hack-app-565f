@@ -23,17 +23,106 @@ agent_types:
   - personal
 
 outcomes:
+  # ── Journeys ─────────────────────────────────────────────────────────────
+  - id: journey.plan
+    summary: Plan a route across London, work out when to set off to arrive on time, or find a late-night way back with night buses and the Night Tube
+    example_phrases:
+      - how do i get from
+      - when should i leave to get to
+      - night bus from soho to
+      - fastest way to get to
+      - best route from kings cross to
+      - what time do i need to set off for
+      - how do i get back late at night from
+      - route with fewest changes to
+    inputs:
+      - name: task
+        type: string
+        required: false
+        description: >-
+          "route" for a route between two places; "leave_by" when the user must
+          arrive by a time and asks when to set off; "night" for travel late at
+          night (after about 23:00) or a night bus or the Night Tube. Return an
+          empty string if unsure.
+      - name: from_place
+        type: string
+        required: false
+        description: >-
+          Where the journey starts: a station, postcode, landmark or area, as
+          the user wrote it. Return an empty string if the message does not
+          name one; never assume the user's location.
+      - name: to_place
+        type: string
+        required: false
+        description: >-
+          Where the journey ends: a station, postcode, landmark or area, as the
+          user wrote it. Return an empty string if the message does not name one.
+      - name: arrive_by
+        type: string
+        required: false
+        description: >-
+          The time the user must arrive, as 24-hour HH:MM London time (for
+          example "18:30"). Return an empty string if no arrival time is given.
+      - name: depart_at
+        type: string
+        required: false
+        description: >-
+          The time the user wants to set off, as 24-hour HH:MM London time.
+          Return an empty string if no departure time is given.
+      - name: preference
+        type: string
+        required: false
+        description: >-
+          One of "fastest", "fewest_changes", "least_walking" or "step_free"
+          if the user asked for that kind of route. Return an empty string if
+          they did not.
+      - name: buffer_minutes
+        type: integer
+        required: false
+        description: >-
+          Spare minutes the user wants before the arrival time, if they said.
+          Leave this out entirely if they did not.
+    output:
+      - name: task
+        type: string
+        description: Which journey question was answered.
+      - name: headline
+        type: string
+        description: One sentence with the answer.
+      - name: facts
+        type: array
+        item_type: string
+        description: The legs of the journey, disruptions and lift faults on it.
+      - name: source
+        type: string
+        description: Where the journey data comes from.
+      - name: as_of
+        type: string
+        description: When the journey was planned, as an ISO time.
+      - name: duration_minutes
+        type: integer
+        required: false
+        description: How long the journey takes, in minutes.
+      - name: leave_at
+        type: string
+        required: false
+        description: When to set off, as HH:MM London time.
+      - name: arrive_at
+        type: string
+        required: false
+        description: When the journey arrives, as HH:MM London time.
+
   # ── Live transport ───────────────────────────────────────────────────────
   - id: transport.live
     summary: Live Tube and rail line status and delays, next bus or train departures from a stop, free Santander bikes and docks, and whether a station is step-free with its lifts working
     example_phrases:
       - is the central line running
-      - any tube delays right now
       - when is the next bus from
-      - next departures at the station
-      - are there santander bikes near
       - free bike docks near
       - is the lift working at
+      - any tube delays right now
+      - next departures at the station
+      - are there santander bikes near
       - is the station step free
     inputs:
       - name: task
@@ -79,16 +168,130 @@ outcomes:
         required: false
         description: The station, stop or area the answer is about.
 
+  # ── Transportation fares ────────────────────────────────────────────────────────────────
+  - id: transportation_fares.cheapest
+    summary: London transportation fares, the cheapest way to pay for the Tube, bus and trains, a single fare between two stations, or the fare to an airport
+    example_phrases:
+      - cheapest way to pay for the tube
+      - how much is the tube fare from
+      - cheapest train fare to heathrow airport
+      - is a travelcard worth it for a week
+      - what is the daily fare cap
+      - how much does oyster cost for my stay
+      - how much is a bus fare in london
+      - should i buy a weekly travelcard or use contactless
+    inputs:
+      - name: task
+        type: string
+        required: false
+        description: >-
+          Which transportation fares question this is. "best_ticket" for the cheapest way to pay
+          over a stay or a week (caps, Travelcards, Oyster, contactless);
+          "single_fare" for the price of one trip between two named stations;
+          "airport" when an airport is named. Return an empty string if unsure.
+      - name: from_place
+        type: string
+        required: false
+        description: >-
+          The station or place the trip starts from, as the user wrote it.
+          Return an empty string if the message does not name one.
+      - name: to_place
+        type: string
+        required: false
+        description: >-
+          The station or place the trip goes to, as the user wrote it. Return an
+          empty string if the message does not name one.
+      - name: airport
+        type: string
+        required: false
+        description: >-
+          The London airport named, as one of heathrow, gatwick, stansted, luton
+          or city. Return an empty string if no airport is named.
+      - name: zones
+        type: string
+        required: false
+        description: >-
+          The fare zones the user travels in, written like "1-2", "1-3", "1-4"
+          or "1-6". Return an empty string if the message does not say.
+      - name: stay_days
+        type: integer
+        required: false
+        description: >-
+          How many days the user will be travelling in London, if they said.
+          Leave this out entirely if they did not; never guess.
+      - name: rides_per_day
+        type: number
+        required: false
+        description: >-
+          How many journeys a day the user expects to make, if they said. Leave
+          this out entirely if they did not; never guess.
+      - name: days_per_week
+        type: integer
+        required: false
+        description: >-
+          How many days a week the user travels (1 to 7), if they said, such as
+          5 for a commuter. Leave this out entirely if they did not.
+      - name: bus_only
+        type: boolean
+        required: false
+        description: >-
+          True only if the user says they travel just on buses. Leave this out
+          if they did not say.
+      - name: card
+        type: string
+        required: false
+        description: >-
+          How the user pays: "uk_contactless", "foreign_contactless" (a card
+          from outside the UK) or "none" (no contactless card). Return an empty
+          string if the message does not say.
+      - name: student
+        type: boolean
+        required: false
+        description: >-
+          True only if the user says they are a student living in London. Leave
+          this out if they did not say.
+      - name: peak
+        type: boolean
+        required: false
+        description: >-
+          True if the user travels at peak time (weekday 06:30-09:30 or
+          16:00-19:00), false if off-peak. Leave this out if they did not say.
+    output:
+      - name: task
+        type: string
+        description: Which transportation fares question was answered.
+      - name: headline
+        type: string
+        description: One sentence with the answer.
+      - name: facts
+        type: array
+        item_type: string
+        description: Short supporting facts and caveats.
+      - name: source
+        type: string
+        description: Where the figures come from.
+      - name: as_of
+        type: string
+        description: When the figures apply from, as YYYY-MM or an ISO time.
+      - name: best_option
+        type: string
+        required: false
+        description: The cheapest way to pay, in a few words.
+      - name: cost_gbp
+        type: number
+        required: false
+        description: The price in pounds of the answer in the headline.
+
   # ── Outdoors ─────────────────────────────────────────────────────────────
   - id: outdoors.walk
     summary: Whether it is a good time for a walk in London, with rain, temperature, wind, air quality and sunset for the next few hours
     example_phrases:
       - is it a good time for a walk
       - will it rain in london
-      - what is the weather like in
-      - do i need an umbrella
       - how is the air quality in
       - what time is sunset in london
+      - what is the weather like in
+      - do i need an umbrella
       - is it nice enough to walk in the park
     inputs:
       - name: task
@@ -141,3 +344,56 @@ outcomes:
         type: number
         required: false
         description: The temperature now, in Celsius.
+
+  # ── Safety ───────────────────────────────────────────────────────────────
+  - id: safety.help
+    summary: Discreet ways to get help in London, the local police neighbourhood team and the nearest station help point, or recorded crime counts for an area
+    example_phrases:
+      - i feel unsafe where can i get help
+      - who is my local police team
+      - how much crime is recorded near
+      - where is the help point at the station
+      - someone is following me
+      - how do i contact the transport police
+      - how do i make a silent 999 call
+      - crime figures for
+    inputs:
+      - name: task
+        type: string
+        required: false
+        description: >-
+          "help" if the user wants help, feels unsafe or asks how to contact the
+          police; "crime" if they ask about crime figures or statistics for an
+          area. Return an empty string if unsure.
+      - name: place
+        type: string
+        required: false
+        description: >-
+          The London station, postcode or area the user named, as written.
+          Return an empty string if the message does not name one; never
+          assume the user's location.
+    output:
+      - name: task
+        type: string
+        description: Which safety question was answered.
+      - name: headline
+        type: string
+        description: One sentence with the answer.
+      - name: facts
+        type: array
+        item_type: string
+        description: Ways to get help, contacts, or crime counts by category.
+      - name: source
+        type: string
+        description: Where the information comes from.
+      - name: as_of
+        type: string
+        description: When the data applies, as YYYY-MM or an ISO time.
+      - name: data_month
+        type: string
+        required: false
+        description: The month of crime data used, as YYYY-MM.
+      - name: place
+        type: string
+        required: false
+        description: The place the answer is about.

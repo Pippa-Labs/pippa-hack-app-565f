@@ -9,6 +9,7 @@ from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 import l1_http
+from pippa_agentapp_sdk import ServiceUnavailableError
 from l1_http import NotFound, refuse
 
 BASE = "https://api.tfl.gov.uk"
@@ -29,6 +30,14 @@ def _get(path: str, params: dict | None = None):
     return l1_http.get_json(f"{BASE}{path}{query}", SERVICE)
 
 
+def _get_list(path: str, params: dict | None = None) -> list:
+    """GET a TfL path that must answer with a JSON list."""
+    data = _get(path, params)
+    if not isinstance(data, list):
+        raise ServiceUnavailableError(f"TfL sent no list for {path}")
+    return data
+
+
 # --- Line statuses ---
 def _first_sentence(text: str) -> str:
     return SENTENCE_END.split(text.strip(), maxsplit=1)[0]
@@ -36,9 +45,11 @@ def _first_sentence(text: str) -> str:
 
 def line_statuses(modes: str = "tube,overground,elizabeth-line,dlr") -> list[dict]:
     """Worst current status of each line as {line, status, severity, reason}."""
-    lines = _get(f"/Line/Mode/{quote(modes, safe=',')}/Status")
+    lines = _get_list(f"/Line/Mode/{quote(modes, safe=',')}/Status")
     result = []
     for line in lines:
+        if not line.get("lineStatuses"):
+            continue
         worst = min(line["lineStatuses"], key=lambda status: status["statusSeverity"])  # lowest is worst
         result.append({
             "line": line["name"],
@@ -53,8 +64,9 @@ def line_statuses(modes: str = "tube,overground,elizabeth-line,dlr") -> list[dic
 def lift_faults() -> list[dict]:
     """Every current lift fault as {station_id, message}."""
     return [
-        {"station_id": fault["stationUniqueId"], "message": fault["message"]}
-        for fault in _get("/Disruptions/Lifts/v2/")
+        {"station_id": fault["stationUniqueId"], "message": fault.get("message") or ""}
+        for fault in _get_list("/Disruptions/Lifts/v2/")
+        if fault.get("stationUniqueId")
     ]
 
 
@@ -116,7 +128,7 @@ def stops_near(lat: float, lon: float, radius: int = 300) -> list[dict]:
 
 def arrivals(stop_id: str, limit: int = 5) -> list[dict]:
     """Soonest predicted arrivals as {line, destination, minutes, platform}."""
-    rows = _get(f"/StopPoint/{quote(stop_id, safe='')}/Arrivals")
+    rows = [row for row in _get_list(f"/StopPoint/{quote(stop_id, safe='')}/Arrivals") if "timeToStation" in row]
     soonest = sorted(rows, key=lambda row: row["timeToStation"])[:limit]
     return [
         {
@@ -152,7 +164,7 @@ def _bike_point(point_id: str) -> dict:
 
 def bike_points(query: str) -> list[dict]:
     """Up to five docks matching a place as {name, bikes, ebikes, empty_docks, lat, lon}."""
-    matches = _get("/BikePoint/Search", {"query": query})[:MAX_BIKE_POINTS]
+    matches = _get_list("/BikePoint/Search", {"query": query})[:MAX_BIKE_POINTS]
     if not matches:
         raise refuse(NotFound, f"I could not find a bike dock near {query}.", f"no bikepoint for {query!r}")
     with ThreadPoolExecutor(max_workers=MAX_BIKE_POINTS) as pool:
@@ -170,8 +182,12 @@ def _fare_station_id(stop_id: str) -> str:
 
 def fare(from_id: str, to_id: str) -> list[dict]:
     """Adult single fares as {ticket, time, cost_gbp}; empty when TfL publishes none."""
-    start, end = _fare_station_id(from_id), _fare_station_id(to_id)
-    sections = _get(f"/StopPoint/{quote(start, safe='')}/FareTo/{quote(end, safe='')}")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        start, end = pool.map(_fare_station_id, (from_id, to_id))
+    try:
+        sections = _get(f"/StopPoint/{quote(start, safe='')}/FareTo/{quote(end, safe='')}")
+    except NotFound:
+        return []
     tickets = {}
     for section in sections:
         for row in section.get("rows") or []:

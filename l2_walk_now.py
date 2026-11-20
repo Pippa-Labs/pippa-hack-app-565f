@@ -38,7 +38,7 @@ def _clamp_int(value, low: int, high: int, default: int) -> int:
         return default
     try:
         number = int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return max(low, min(high, number))
 
@@ -165,7 +165,7 @@ def _rate_hour(row: dict) -> tuple[int, list[str]]:
     return level, reasons
 
 
-def _rate_walk(rows: list[dict], air: dict, ends: datetime, sunset: datetime) -> tuple[int, list[str]]:
+def _rate_walk(rows: list[dict], air: dict, start: datetime, ends: datetime, weather: dict) -> tuple[int, list[str]]:
     """Worst rating across the walk's hours, plus air and daylight."""
     level, reasons = 0, []
     for row in rows:
@@ -176,8 +176,10 @@ def _rate_walk(rows: list[dict], air: dict, ends: datetime, sunset: datetime) ->
         level, reasons = 2, reasons + [f"air quality is {air['band']}"]
     elif air.get("band") == "poor":
         level, reasons = max(level, 1), reasons + ["air quality is poor"]
-    if ends > sunset:
-        level, reasons = max(level, 1), reasons + [f"it will be dark after {_clock(sunset)}"]
+    if start >= weather["sunset"] or start < weather["sunrise"]:
+        level, reasons = max(level, 1), reasons + ["it is already dark"]
+    elif ends > weather["sunset"]:
+        level, reasons = max(level, 1), reasons + [f"it will be dark after {_clock(weather['sunset'])}"]
     return level, reasons
 
 
@@ -208,7 +210,7 @@ def walk_now(inputs: dict, now: datetime) -> dict:
     local_now = now.astimezone(LONDON)
     ends = local_now + timedelta(minutes=minutes)
     window = [r for r in all_rows if r["time"] < ends and r["time"] + timedelta(hours=1) > local_now]
-    level, reasons = _rate_walk(window, air, ends, weather["sunset"])
+    level, reasons = _rate_walk(window, air, local_now, ends, weather)
     verdict = VERDICTS[level]
 
     first = window[0]

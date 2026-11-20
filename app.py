@@ -14,23 +14,54 @@ from pippa_agentapp_sdk import (
     validate_manifest,
 )
 
+import l2_best_route
+import l2_crime_watch
+import l2_fare_advisor
+import l2_get_help
 import l2_live
+import l2_step_free
 import l2_walk_now
+import l3_leave_by
+import l3_night_journey
 
 MANIFEST_PATH = Path(__file__).with_name("manifest.yaml")
 
 # --- Outcome -> sub-task -> entry function (each takes inputs and now) ---
 ROUTES = {
+    "transportation_fares.cheapest": {
+        "best_ticket": l2_fare_advisor.best_ticket,
+        "single_fare": l2_fare_advisor.single_fare,
+        "airport": l2_fare_advisor.airport_fare,
+    },
+    "journey.plan": {
+        "route": l2_best_route.best_route,
+        "leave_by": l3_leave_by.leave_by,
+        "night": l3_night_journey.night_journey,
+    },
     "transport.live": {
         "status": l2_live.line_status,
+        "departures": l2_live.next_departures,
+        "bikes": l2_live.bike_docks,
+        "step_free": l2_step_free.step_free_check,
     },
     "outdoors.walk": {
         "weather": l2_walk_now.weather_watch,
         "walk": l2_walk_now.walk_now,
     },
+    "safety.help": {
+        "help": l2_get_help.get_help,
+        "crime": l2_crime_watch.crime_watch,
+    },
 }
 
 BASE_FIELDS = ("headline", "facts", "source", "as_of")
+
+
+class UnreadableData(AgentAppError):
+    """An upstream service answered in a shape the app could not read."""
+
+    user_message = "A live data service sent something I could not read. Please try again later."
+    retryable = False
 
 
 class UnknownOutcome(AgentAppError):
@@ -41,6 +72,12 @@ class UnknownOutcome(AgentAppError):
 
 
 # --- Sub-task choice when the extractor left `task` empty ---
+def _is_late(clock: str) -> bool:
+    """True for an HH:MM between 23:00 and 04:59."""
+    hour = clock.split(":")[0].strip()
+    return hour.isdigit() and (int(hour) >= 23 or int(hour) < 5)
+
+
 def _default_task(outcome_id: str, inputs: dict) -> str:
     """Infer the sub-task from which inputs are present."""
     has = lambda name: inputs.get(name) not in (None, "")  # noqa: E731
@@ -49,7 +86,9 @@ def _default_task(outcome_id: str, inputs: dict) -> str:
             return "airport"
         return "single_fare" if has("from_place") and has("to_place") else "best_ticket"
     if outcome_id == "journey.plan":
-        return "leave_by" if has("arrive_by") else "route"
+        if has("arrive_by"):
+            return "leave_by"
+        return "night" if _is_late(str(inputs.get("depart_at") or "")) else "route"
     if outcome_id == "transport.live":
         return "departures" if has("place") and not has("line") else "status"
     if outcome_id == "outdoors.walk":
@@ -78,12 +117,17 @@ class App:
         if tasks is None:
             raise UnknownOutcome(f"undeclared outcome {call.outcome_id!r}")
         inputs = dict(call.inputs)
-        task = (inputs.get("task") or "").strip().lower()
+        task = str(inputs.get("task") or "").strip().lower()
         if task not in tasks:
             task = _default_task(call.outcome_id, inputs)
         if task not in tasks:
             task = next(iter(tasks))
-        answer = tasks[task](inputs, call.context.now)
+        try:
+            answer = tasks[task](inputs, call.context.now)
+        except AgentAppError:
+            raise
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError) as exc:
+            raise UnreadableData(f"{call.outcome_id}/{task}: {type(exc).__name__}: {exc}") from None
         allowed = self._fields[call.outcome_id]
         data = {"task": task, **{k: v for k, v in answer.items() if k in allowed and v is not None}}
         missing = [name for name in BASE_FIELDS if name not in data]
