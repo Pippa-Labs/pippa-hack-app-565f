@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -15,6 +16,13 @@ GOOD_SERVICE = 10
 MAX_POINTS = 3
 MAX_ARRIVALS = 6
 MAX_STOPS = 2
+ROUTE_STOPS = 4  # a route may skip the very nearest stops, so look a little wider
+ROUTE_ARRIVALS = 30  # per stop, before keeping only the wanted route
+BUS_ROUTE = re.compile(
+    r"(?P<lead>(?:the\s+)?(?:(?:bus|route)\s+)?)(?P<prefix>[a-z]{0,2})(?P<number>\d{1,3})(?P<suffix>[a-z]?)(?P<tail>\s+bus)?",
+    re.IGNORECASE)
+POSTCODE_AREAS = {"E", "EC", "N", "NW", "SE", "SW", "W", "WC"}
+MAX_POSTCODE_DISTRICT = 28  # SE28 is the highest; N29 or W100 can only be a route
 
 
 def _text(inputs: dict, name: str) -> str:
@@ -45,8 +53,23 @@ def _tfl_and_rail_statuses() -> tuple[list[dict], list[dict]]:
         return tfl.result(), rail_lines
 
 
+def _bus_route(value: str, *, postcode_possible: bool = True) -> str:
+    """'the 73', 'bus N29' or '73' as the route number ('73', 'N29'); '' for anything else."""
+    match = BUS_ROUTE.fullmatch(value.strip())
+    if not match:
+        return ""
+    prefix, number = match["prefix"].upper(), int(match["number"])
+    qualified = bool(match["lead"].strip() or match["tail"])
+    looks_like_postcode = prefix in POSTCODE_AREAS and number <= MAX_POSTCODE_DISTRICT and not match["suffix"]
+    if postcode_possible and looks_like_postcode and not qualified:
+        return ""  # a bare "N1" or "SE1" is an area, not the N1 bus
+    return f"{prefix}{match['number']}{match['suffix'].upper()}"
+
+
 def line_status(inputs: dict, now: datetime) -> dict:
     """Current status of every line, or of the one line named."""
+    if _route_and_stop(inputs)[0]:
+        return next_departures(inputs, now)  # buses have no line status; a route means its arrivals
     lines, rail = _tfl_and_rail_statuses()
     if not lines:
         raise ServiceUnavailableError("TfL line status came back empty")
@@ -91,10 +114,13 @@ def _strip_station(name: str) -> str:
     return name
 
 
-def _merged_arrivals(stop_ids: list[str]) -> list[dict]:
-    """Arrivals at several stops at once, soonest first; a bus seen from two stops counts once."""
+def _merged_arrivals(stop_ids: list[str], route: str = "") -> list[dict]:
+    """Arrivals at several stops at once, soonest first, optionally one route only; a bus seen twice counts once."""
+    limit = ROUTE_ARRIVALS if route else MAX_ARRIVALS
     with ThreadPoolExecutor(max_workers=len(stop_ids)) as pool:
-        rows = [row for batch in pool.map(l1_tfl.arrivals, stop_ids, [MAX_ARRIVALS] * len(stop_ids)) for row in batch]
+        rows = [row for batch in pool.map(l1_tfl.arrivals, stop_ids, [limit] * len(stop_ids)) for row in batch]
+    if route:
+        rows = [row for row in rows if row["line"].upper() == route]
     unique = {(row["line"], row["destination"], row["minutes"]): row for row in rows}
     return sorted(unique.values(), key=lambda row: row["minutes"])[:MAX_ARRIVALS]
 
@@ -108,27 +134,43 @@ def _station_departures(name: str) -> tuple[str, list[dict]]:
     return _strip_station(station["name"]), _merged_arrivals(stop_ids)
 
 
-def _bus_departures(name: str) -> tuple[str, list[dict]]:
-    """Departures from the bus stops nearest a place."""
+def _bus_departures(name: str, route: str = "") -> tuple[str, list[dict]]:
+    """Departures from the bus stops nearest a place, optionally for one route only."""
     point = l1_geo.resolve(name)
-    stops = l1_tfl.stops_near(point["lat"], point["lon"])[:MAX_STOPS]
+    stops = l1_tfl.stops_near(point["lat"], point["lon"])[:ROUTE_STOPS if route else MAX_STOPS]
     if not stops:
         raise refuse(NotFound, f"I could not find a bus stop near {name}.", f"no stops near {name!r}")
-    return f"bus stops near {point['label']}", _merged_arrivals([stop["id"] for stop in stops])
+    label = f"{route} stops near {point['label']}" if route else f"bus stops near {point['label']}"
+    return label, _merged_arrivals([stop["id"] for stop in stops], route)
+
+
+def _route_and_stop(inputs: dict) -> tuple[str, str]:
+    """The bus route named in either input, and the stop or area left over ('' when none)."""
+    place, line = _text(inputs, "place"), _text(inputs, "line")
+    if route := _bus_route(line, postcode_possible=False):
+        return route, "" if _bus_route(place) else place
+    if route := _bus_route(place):
+        return route, line
+    return "", place
 
 
 def next_departures(inputs: dict, now: datetime) -> dict:
     """Next trains from a named station, or next buses from the stops nearest a place."""
-    place = _text(inputs, "place")
+    route, place = _route_and_stop(inputs)
+    if route and not place:
+        raise refuse(NeedsInput, f"Which stop? Tell me the street or stop for the {route}.", f"route {route} without a stop")
     if not place:
         raise refuse(NeedsInput, "Which station or stop? Tell me its name and I will look up the next departures.", "no place")
-    try:
-        label, rows = _station_departures(place)
-    except NotFound:
-        label, rows = _bus_departures(place)
+    if route:  # a route number is never a stop name, so skip the station search
+        label, rows = _bus_departures(place, route)
+    else:
+        try:
+            label, rows = _station_departures(place)
+        except NotFound:
+            label, rows = _bus_departures(place)
     if not rows:
-        return {"headline": f"No departures predicted from {label} right now.",
-                "key_points": ["TfL has no live predictions here"], "source": SOURCE, "place": label}
+        empty = f"No {route} buses predicted near {place} right now." if route else f"No departures predicted from {label} right now."
+        return {"headline": empty, "key_points": ["TfL has no live predictions here"], "source": SOURCE, "place": label}
     first = rows[0]
     return {
         "headline": f"Next from {label}: {_departure(first)}.",

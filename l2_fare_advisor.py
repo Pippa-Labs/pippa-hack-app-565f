@@ -18,6 +18,7 @@ MAX_POINTS = 3
 STATION_SUFFIX = re.compile(r"\s+(Underground|Rail|DLR|Overground)?\s*Station$", re.IGNORECASE)
 DEFAULT_STAY_DAYS = 7
 DAYS_PER_MONTH_CARD = 28  # a monthly Travelcard covers about four weeks
+MONTHLY = "Monthly Travelcard"  # its price is derived, not published, so it is always shown as an estimate
 CARDS = ("uk_contactless", "foreign_contactless", "none")
 ZONE_CHOICES = "1-2, 1-3, 1-4 or 1-6"
 AIRPORT_STATIONS = {"heathrow": "Heathrow Terminals 2 & 3", "city": "London City Airport"}
@@ -91,6 +92,15 @@ def _text(pence: int) -> str:
     return f"£{pence / 100:.2f}"
 
 
+def _whole_pounds(pence: int) -> int:
+    """Pence rounded half up to whole pounds, for figures that are only estimates."""
+    return (pence + 50) // 100
+
+
+def _estimate(pence: int) -> str:
+    return f"about £{_whole_pounds(pence)} (estimate)"
+
+
 def _pence(gbp: float) -> int:
     return round(float(gbp) * 100)
 
@@ -153,7 +163,8 @@ def _options(zones: str, stay_days: int, days_per_week: int, bus_only: bool, stu
                {"name": "Weekly Travelcards", "pence": _weekly_cards_cost(stay_days, discount(weekly))}]
     if stay_days >= DAYS_PER_MONTH_CARD:
         monthly = discount(fares.monthly_travelcard(zones))
-        options.append({"name": "Monthly Travelcard", "pence": _monthly_card_cost(stay_days, discount(weekly), monthly)})
+        options.append({"name": MONTHLY, "pence": _monthly_card_cost(stay_days, discount(weekly), monthly),
+                        "card_pence": monthly})
     return options
 
 
@@ -201,15 +212,18 @@ def best_ticket(inputs: dict, now: datetime) -> dict:
     way = best["name"] if card != "none" else best["name"].replace("with contactless", "with Oyster")
     at_most = "at most " if best["name"].startswith("Pay as you go") else ""
     unit = "day" if stay_days == 1 else "days"
-    points = [_why(best, stay_days, days_per_week, daily, weekly),
+    estimated = best["name"] == MONTHLY
+    price = _estimate(total) if estimated else f"{at_most}{_text(total)}"
+    estimate_point = [f"{MONTHLY} {_estimate(best['card_pence'])}"] if estimated else []
+    points = [_why(best, stay_days, days_per_week, daily, weekly), *estimate_point,
               *_student_saving(zones, stay_days, student, bus_only),
               *_caveats(fee_pence, card, student, bus_only)]
     return {
-        "headline": f"{way}: {at_most}{_text(total)} for {stay_days} {unit} {place}.",
+        "headline": f"{way}: {price} for {stay_days} {unit} {place}.",
         "key_points": points[:MAX_POINTS],
         "source": TABLE_SOURCE,
-        "best_option": way,
-        "cost_gbp": _gbp(total),
+        "best_option": f"{way}, {_estimate(total)}" if estimated else way,
+        "cost_gbp": float(_whole_pounds(total)) if estimated else _gbp(total),
     }
 
 

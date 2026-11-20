@@ -586,7 +586,7 @@ def test_help_with_a_place_adds_police_and_station_facts_after_the_fixed_ones(ne
     result = call("safety.help", {"place": "W1D 3QF"})
     points = result.data["key_points"]
     assert "999" in result.data["headline"]
-    assert points[2] == "Oxford Circus: 12 help points"
+    assert points[2] == "Police: Soho Neighbourhood Team, call 101"
     assert not any("example.com" in text for text in _texts(result.data))
 
 
@@ -596,7 +596,7 @@ def test_help_still_answers_when_every_lookup_fails(net):
         "/StopPoint/Search/": http_error(403),
     })
     result = call("safety.help", {"task": "help", "place": "W1D 3QF"})
-    assert result.data["key_points"][2] == "Non-emergency: call 101"
+    assert result.data["key_points"][2] == "Non-emergency police: 101"
     assert "999" in result.data["headline"]
 
 

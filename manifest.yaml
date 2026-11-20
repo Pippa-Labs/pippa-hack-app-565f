@@ -205,8 +205,9 @@ outcomes:
         type: string
         required: false
         description: >-
-          The Tube, Overground, Elizabeth line or DLR line named, such as
-          "Central" or "Northern". Return an empty string if no line is named.
+          The Tube, Overground, Elizabeth line, DLR or National Rail line named,
+          such as "Central" or "Southern", or a bus route number such as "73"
+          or "N29". Return an empty string if no line or route is named.
     output:
       - name: task
         type: string
