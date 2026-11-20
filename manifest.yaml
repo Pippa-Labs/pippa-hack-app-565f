@@ -314,6 +314,13 @@ outcomes:
         description: >-
           True if the user travels at peak time (weekday 06:30-09:30 or
           16:00-19:00), false if off-peak. Leave this out if they did not say.
+      - name: budget_gbp
+        type: number
+        required: false
+        description: >-
+          The most the user wants to spend on this trip, in pounds, if they said
+          (for example 3 for "I have three pounds"). Leave this out entirely if
+          not mentioned; never guess.
     output:
       - name: task
         type: string

@@ -26,6 +26,7 @@ DEFAULT_NIGHT_DEPARTURE = time(23, 30)
 NIGHT_TUBE_AFTER = time(0, 30)
 NIGHT_BUS_NOTE = "Night buses run every night"
 NIGHT_TUBE_NOTE = "Night Tube runs Friday and Saturday nights"
+LIFT_OUT = "Lift out at {}"
 
 
 # --- Inputs ---
@@ -52,6 +53,23 @@ def clock_time(text, now: datetime, *, evening: bool = False) -> datetime:
     return l1_clock.parse_clock(clean(text), now, evening=evening)
 
 
+# --- Lift faults on a route ---
+def _lift_faults() -> list[dict]:
+    """Current lift faults, or none if the feed fails: the route matters more than the lift check."""
+    try:
+        return l1_tfl.lift_faults()
+    except AgentAppError:  # an optional check must not hide the route
+        return []
+
+
+def lift_notes(faults: list[dict], journey: dict) -> list[str]:
+    """At most one point naming the stations in the journey's legs that have a lift out."""
+    summaries = " ".join(leg["summary"] for leg in journey["legs"]).lower()
+    stations = (fault["message"].split(":")[0].strip() for fault in faults)
+    names = list(dict.fromkeys(name for name in stations if name and name.lower() in summaries))
+    return [LIFT_OUT.format(" and ".join(names))] if names else []
+
+
 # --- Planning ---
 def route_between(start: dict, end: dict, preference: str = "fastest", *, when: datetime | None = None,
                   arriving: bool = False, modes: str | None = None) -> list[dict]:
@@ -65,15 +83,17 @@ def route_between(start: dict, end: dict, preference: str = "fastest", *, when: 
 
 def plan(inputs: dict, now: datetime, *, when: datetime | None = None, arriving: bool = False,
          modes: str | None = None) -> dict:
-    """Resolve both places and return the best journey plus every option and both points."""
+    """Resolve both places and return the best journey, every option, both points and current lift faults."""
     start_text, end_text = place_names(inputs)
     preference = clean(inputs.get("preference")) or "fastest"
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        faults_job = pool.submit(_lift_faults)
         start_job, end_job = pool.submit(l1_geo.resolve, start_text), pool.submit(l1_geo.resolve, end_text)
         start, end = start_job.result(), end_job.result()
-    journeys = route_between(start, end, preference, when=when, arriving=arriving, modes=modes)
+        journeys = route_between(start, end, preference, when=when, arriving=arriving, modes=modes)
+        faults = faults_job.result()
     return {"journey": journeys[0], "journeys": journeys, "from": start_text, "to": end_text,
-            "start_point": start, "end_point": end, "preference": preference}
+            "start_point": start, "end_point": end, "preference": preference, "lift_faults": faults}
 
 
 # --- Describing a journey ---
@@ -122,14 +142,17 @@ def best_route(inputs: dict, now: datetime) -> dict:
     """Best journey between two places, optionally leaving at depart_at."""
     depart_at = clean(inputs.get("depart_at"))
     when = clock_time(depart_at, now, evening=is_evening(inputs)) if depart_at else None
-    journey = plan(inputs, now, when=when)["journey"]
+    found = plan(inputs, now, when=when)
+    journey = found["journey"]
     points = [times_point(journey)]
     if journey["fare_gbp"] is not None:
         points.append(f"£{journey['fare_gbp']:.2f} with contactless")
     if journey["disruptions"]:
         points.append("Disruption reported on this route")
+    lifts = lift_notes(found["lift_faults"], journey)
+    points = lifts + points if found["preference"] == "step_free" else points + lifts
     return {
-        "headline": f"{route_words(journey)}, {journey['duration_minutes']} min. {points[0]}.",
+        "headline": f"{route_words(journey)}, {journey['duration_minutes']} min. {times_point(journey)}.",
         "key_points": points,
         "source": SOURCE,
         **extras(journey),
@@ -185,4 +208,5 @@ def night_route(frm_text: str, to_text: str, when: datetime, now: datetime) -> d
         problems = line_problems(statuses.result(), journey)
     notes = [NIGHT_BUS_NOTE] if uses_night_bus(journey) else []
     notes += [NIGHT_TUBE_NOTE] if uses_night_tube(journey) else []
+    notes += lift_notes(found["lift_faults"], journey)
     return {"journey": journey, "notes": notes + problems, "extras": extras(journey)}

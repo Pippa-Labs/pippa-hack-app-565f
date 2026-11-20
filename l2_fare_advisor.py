@@ -66,6 +66,17 @@ def _parse_zones(value) -> str:
     return zones
 
 
+def _parse_budget(value) -> int | None:
+    """A budget in pence, or None when absent, unreadable or not positive."""
+    if not _present(value):
+        return None
+    try:
+        pence = round(float(str(value).strip().lstrip("£")) * 100)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return pence if pence > 0 else None
+
+
 def _parse_card(value) -> str:
     card = str(value).strip().lower() if _present(value) else "uk_contactless"
     return card if card in CARDS else "uk_contactless"
@@ -78,6 +89,29 @@ def _gbp(pence: int) -> float:
 
 def _text(pence: int) -> str:
     return f"£{pence / 100:.2f}"
+
+
+def _pence(gbp: float) -> int:
+    return round(float(gbp) * 100)
+
+
+def _short_money(pence: int) -> str:
+    """'£3' for whole pounds, '£3.50' otherwise, '10p' under a pound."""
+    if pence < 100:
+        return f"{pence}p"
+    return f"£{pence // 100}" if pence % 100 == 0 else _text(pence)
+
+
+# --- Budget verdict ---
+def _budget_headline(lead: str, cost_pence: int, budget_pence: int) -> str:
+    """The price lead followed by whether it fits the budget, e.g. '£3.10 ...: 10p over your £3.'"""
+    budget = _short_money(budget_pence)
+    if cost_pence > budget_pence:
+        joint = ". " if ":" in lead else ": "  # avoid two colons after an airport lead
+        return f"{lead}{joint}{_short_money(cost_pence - budget_pence)} over your {budget}."
+    if cost_pence == budget_pence:
+        return f"{lead}. Exactly your {budget} budget."
+    return f"{lead}. Within your {budget}."
 
 
 # --- Ticket cost rules (pence) ---
@@ -131,6 +165,14 @@ def _why(best: dict, stay_days: int, days_per_week: int, daily: int, weekly: int
     return "Weekly cap kicks in" if capped_week else "Daily cap limits each day"
 
 
+def _student_saving(zones: str, stay_days: int, student: bool, bus_only: bool) -> list[str]:
+    """Monthly saving of a Student Oyster over the adult monthly Travelcard (a derived figure)."""
+    if not student or bus_only or stay_days < DAYS_PER_MONTH_CARD:
+        return []
+    monthly = fares.monthly_travelcard(zones)
+    return [f"Student Oyster saves about {_text(monthly - fares.student_price(monthly))} a month"]
+
+
 def _caveats(fee_pence: int, card: str, student: bool, bus_only: bool) -> list[str]:
     points = []
     if card == "none":
@@ -159,7 +201,9 @@ def best_ticket(inputs: dict, now: datetime) -> dict:
     way = best["name"] if card != "none" else best["name"].replace("with contactless", "with Oyster")
     at_most = "at most " if best["name"].startswith("Pay as you go") else ""
     unit = "day" if stay_days == 1 else "days"
-    points = [_why(best, stay_days, days_per_week, daily, weekly), *_caveats(fee_pence, card, student, bus_only)]
+    points = [_why(best, stay_days, days_per_week, daily, weekly),
+              *_student_saving(zones, stay_days, student, bus_only),
+              *_caveats(fee_pence, card, student, bus_only)]
     return {
         "headline": f"{way}: {at_most}{_text(total)} for {stay_days} {unit} {place}.",
         "key_points": points[:MAX_POINTS],
@@ -207,9 +251,13 @@ def single_fare(inputs: dict, now: datetime) -> dict:
     label = "peak" if chosen is peak else "off-peak"
     other = [f"{name.capitalize()} £{row['cost_gbp']:.2f}" for name, row in (("peak", peak), ("off-peak", off_peak))
              if row and row is not chosen]
+    lead = f"£{chosen['cost_gbp']:.2f} {label} with contactless"
+    budget = _parse_budget(inputs.get("budget_gbp"))
+    # No route line comes from the fare lookup, so a budget headline is price and verdict only.
+    headline = (_budget_headline(lead, _pence(chosen["cost_gbp"]), budget) if budget is not None
+                else f"{lead}, {_station(start['name'])} to {_station(end['name'])}.")
     return {
-        "headline": (f"£{chosen['cost_gbp']:.2f} {label} with contactless, "
-                     f"{_station(start['name'])} to {_station(end['name'])}."),
+        "headline": headline,
         "key_points": [*other, "Daily cap still applies"],
         "source": SOURCE,
         "best_option": f"{chosen['ticket']} ({chosen['time']})",
@@ -259,16 +307,20 @@ def airport_fare(inputs: dict, now: datetime) -> dict:
     options = fares.AIRPORTS[airport]
     priced = [option for option in options if option["price_pence"] is not None]
     points = [_option_point(option) for option in options][:MAX_POINTS]
+    budget = _parse_budget(inputs.get("budget_gbp"))
     if live:
         start, cost = live
-        return {"headline": f"£{cost:.2f} with contactless from {start} to {name}.", "key_points": points,
+        headline = (_budget_headline(f"£{cost:.2f} with contactless to {name}", _pence(cost), budget)
+                    if budget is not None else f"£{cost:.2f} with contactless from {start} to {name}.")
+        return {"headline": headline, "key_points": points,
                 "source": SOURCE, "best_option": "Pay as you go", "cost_gbp": round(cost, 2)}
     if not priced:
         return {"headline": f"No checked price for {name}; check {_short_option(options[0]['name'])}.",
                 "key_points": points, "source": TABLE_SOURCE}
     cheapest = min(priced, key=lambda option: option["price_pence"])
+    lead = f"{_short_option(cheapest['name'])} to {name}: {_text(cheapest['price_pence'])}"
     return {
-        "headline": f"{_short_option(cheapest['name'])} to {name}: {_text(cheapest['price_pence'])}.",
+        "headline": _budget_headline(lead, cheapest["price_pence"], budget) if budget is not None else f"{lead}.",
         "key_points": points,
         "source": TABLE_SOURCE,
         "best_option": cheapest["name"],

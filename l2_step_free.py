@@ -11,6 +11,7 @@ from l1_http import NeedsInput, refuse
 
 STATION_SUFFIX = re.compile(r"\s+(Underground|Rail|DLR|Overground|Elizabeth line)?\s*Station$", re.IGNORECASE)
 YES = "yes"
+TFL_ADVICE = "Call TfL 0343 222 1234 before you travel."
 
 
 # --- Small helpers ---
@@ -82,9 +83,9 @@ def _headline(access: dict) -> str:
     if state == "unknown":
         return f"TfL doesn't say if {name} is step-free; check before you go."
     if state == "no":
-        return f"{name} has no step-free access via lift."
+        return f"{name} has no step-free access via lift. {TFL_ADVICE}"
     if faults:
-        return f"{name} is step-free, but a lift is out of service."
+        return f"{name} is step-free, but a lift is out of service. {TFL_ADVICE}"
     return f"{name} is step-free via lift; no lift faults reported."
 
 

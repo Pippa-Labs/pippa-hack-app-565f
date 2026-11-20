@@ -134,6 +134,7 @@ def net(monkeypatch):
     """Install a FakeNet with the default happy-path routes."""
     fake = FakeNet({
         "/Line/Mode/national-rail/": [],
+        "/Disruptions/Lifts/v2": [],
         "/Line/Mode/": LINE_STATUS,
         "api.postcodes.io/postcodes/": POSTCODE,
         "air-quality-api.open-meteo.com": _air(),

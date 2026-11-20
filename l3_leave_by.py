@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 
@@ -10,9 +11,10 @@ import l1_tfl
 import l1_weather
 import l2_crime_watch
 import l2_going_out
+import l2_step_free
 import l2_walk_now
 from l1_http import NeedsInput, NotFound, refuse
-from l2_best_route import (SOURCE, clean, clock_time, extras, hhmm, is_evening, line_problems, night_route,
+from l2_best_route import (SOURCE, clean, clock_time, extras, hhmm, is_evening, lift_notes, line_problems, night_route,
                            ride_legs, route_between, route_words, vehicle_label)
 from l2_get_help import DISCREET_LINE
 from pippa_agentapp_sdk import AgentAppError
@@ -25,6 +27,8 @@ WALK_DETOUR = 1.3  # streets are longer than a straight line
 WALK_KMH = 4.8
 RETURN_BUDGET_SECONDS = 12
 MAX_POINTS = 3
+MAX_STATIONS = 2
+MAX_CRIME_PLACES = 2
 HOUR = timedelta(hours=1)
 
 
@@ -69,12 +73,6 @@ def forecast_at(point: dict, now: datetime) -> dict:
     return l1_weather.forecast(point["lat"], point["lon"], now, FORECAST_HOURS)
 
 
-def lift_notes(faults: list[dict], journey: dict) -> list[str]:
-    """Lift faults at stations named in the journey's legs."""
-    summaries = " ".join(leg["summary"] for leg in journey["legs"]).lower()
-    stations = (fault["message"].split(":")[0].strip() for fault in faults)
-    return list(dict.fromkeys(f"Lift fault at {name}" for name in stations if name and name.lower() in summaries))
-
 
 def rows_between(rows: list[dict], start: datetime, end: datetime) -> list[dict]:
     return [row for row in rows if row["time"] < end and row["time"] + HOUR > start]
@@ -111,22 +109,70 @@ def sunset_plan(sunset: datetime, end_point: dict, to_text: str, deadline: datet
 
 
 # --- The way home after dark (phase 2) ---
+def leg_end(leg: dict) -> str:
+    """Where a leg ends, from its summary: 'Victoria line to Brixton' gives 'Brixton'."""
+    summary = leg["summary"]
+    return summary.rsplit(" to ", 1)[1].strip() if " to " in summary else ""
+
+
+def route_stations(journey: dict) -> list[str]:
+    """Up to MAX_STATIONS stations named in the legs: rail stops and walks to a station (bus stops are not stations)."""
+    names = [leg_end(leg) for leg in journey["legs"]
+             if leg["mode"] not in ("walking", "bus") or "station" in leg_end(leg).lower()]
+    return list(dict.fromkeys(name for name in names if name))[:MAX_STATIONS]
+
+
+def help_count(station: str) -> tuple[str, int]:
+    """A station's short name and its help points, summing TfL's '12 on platforms, 0 in ticket halls'."""
+    access = l2_step_free.station_access(station)
+    return access["name"], sum(int(n) for n in re.findall(r"\d+", access["help_points"]))
+
+
+def help_line(route: dict) -> str | None:
+    """'Help points: Victoria (12), Brixton (4)', leaving out stations with none or that failed."""
+    stations = route_stations(route["journey"])
+    if not stations:
+        return None
+    with ThreadPoolExecutor(max_workers=len(stations)) as pool:
+        found = [optional(job) for job in [pool.submit(help_count, name) for name in stations]]
+    counts = dict.fromkeys(f"{name} ({count})" for name, count in filter(None, found) if count)
+    return f"Help points: {', '.join(counts)}" if counts else None
+
+
+def walk_places(journey: dict, end_point: dict, return_to: str) -> list:
+    """Where the walking legs are: the destination for the first, return_to for the last, else the leg's end."""
+    legs, places = journey["legs"], []
+    for index, leg in enumerate(legs):
+        if leg["mode"] != "walking":
+            continue
+        places.append(end_point if index == 0 else return_to if index == len(legs) - 1 else leg_end(leg))
+    unique = {str(place.get("label") if isinstance(place, dict) else place).lower(): place for place in places if place}
+    return list(unique.values())[:MAX_CRIME_PLACES]
+
+
+def crime_near_walks(route_job, end_point: dict, return_to: str) -> dict:
+    """Recorded crime near the walking parts, or at both ends when the route is unknown or has no walks."""
+    places = [] if route_job.exception() else walk_places(route_job.result()["journey"], end_point, return_to)
+    return l2_crime_watch.recorded_near(places or [end_point, return_to])
+
+
 def crime_line(found: dict) -> str:
-    """'September 2026: 812 recorded crimes near Marble Arch, 95 near Brixton; not a safety rating.'"""
-    counts = [f"{place['total']:,} near {place['label']}" for place in found["places"]]
-    counts[0] = counts[0].replace(" near ", " recorded crimes near ", 1)
-    return f"{l2_crime_watch.month_name(found['month'])}: {', '.join(counts)}; not a safety rating."
+    """'Marble Arch: 812 recorded (September 2026); Brixton: 95 recorded (September 2026); not a safety rating.'"""
+    month = l2_crime_watch.month_name(found["month"])
+    counts = [f"{place['label']}: {place['total']:,} recorded ({month})" for place in found["places"]]
+    return f"{'; '.join(counts)}; not a safety rating."
 
 
 def way_home(end_point: dict, to_text: str, return_to: str, return_at: datetime, now: datetime) -> dict:
-    """Late return route and recorded crime at both ends, within the budget; slow parts are dropped."""
-    pool = ThreadPoolExecutor(max_workers=2)
+    """Late return route, help points on it and crime near its walks, within the budget; slow parts are dropped."""
+    pool = ThreadPoolExecutor(max_workers=3)
     route_job = pool.submit(night_route, to_text, return_to, return_at, now)
-    crime_job = pool.submit(l2_crime_watch.recorded_near, [end_point, return_to])
-    wait([route_job, crime_job], timeout=RETURN_BUDGET_SECONDS)
+    help_job = pool.submit(after, route_job, help_line)
+    crime_job = pool.submit(crime_near_walks, route_job, end_point, return_to)
+    wait([route_job, help_job, crime_job], timeout=RETURN_BUDGET_SECONDS)
     pool.shutdown(wait=False, cancel_futures=True)  # the evening plan must answer even if a service hangs
-    route, crime = settled(route_job), settled(crime_job)
-    return {"route": route, "crime_note": crime_line(crime) if crime else None}
+    crime = settled(crime_job)
+    return {"route": settled(route_job), "help_line": settled(help_job), "crime_note": crime_line(crime) if crime else None}
 
 
 def settled(job):
@@ -136,11 +182,14 @@ def settled(job):
     return job.result()
 
 
-def return_lines(route: dict, return_to: str, assumed: bool) -> list[str]:
+def return_lines(route: dict, help_points: str | None, return_to: str, assumed: bool) -> list[str]:
+    """Route, the assumption if any, help points, then service notes; at most MAX_POINTS."""
     journey = route["journey"]
     lines = [f"{route_words(journey)}, leave {hhmm(journey['start'])}, home {hhmm(journey['arrival'])}"]
     if assumed:
         lines.append(f"Assumes heading to {return_to} at {hhmm(journey['start'])}")
+    if help_points:
+        lines.append(help_points)
     return (lines + route["notes"])[:MAX_POINTS]
 
 
@@ -226,7 +275,7 @@ def after_dark(result: dict, end_point: dict, to_text: str, return_to: str, retu
         result["crime_note"] = home["crime_note"]
     if not home["route"]:
         return [f"Dark after {hhmm(sunset)}: plan your way back"]
-    result["return_route"] = return_lines(home["route"], return_to, assumed)
+    result["return_route"] = return_lines(home["route"], home["help_line"], return_to, assumed)
     journey = home["route"]["journey"]
     return [f"Home: leave {hhmm(journey['start'])}, {vehicle_label(ride_legs(journey)[0])}"
             if ride_legs(journey) else f"Home: walk, leave {hhmm(journey['start'])}"]
