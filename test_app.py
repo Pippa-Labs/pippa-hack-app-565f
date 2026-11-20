@@ -133,6 +133,7 @@ def http_error(code: int) -> urllib.error.HTTPError:
 def net(monkeypatch):
     """Install a FakeNet with the default happy-path routes."""
     fake = FakeNet({
+        "/Line/Mode/national-rail/": [],
         "/Line/Mode/": LINE_STATUS,
         "api.postcodes.io/postcodes/": POSTCODE,
         "air-quality-api.open-meteo.com": _air(),
@@ -870,3 +871,28 @@ def test_safety_answer_is_concise(net):
     data = call("safety.help", {"task": "help"}).data
     assert_concise(data)
     assert_never_calls_anything_safe(data)
+
+
+# --- transport.live: National Rail ---
+SOUTHERN_DELAYED = [{"name": "Southern", "lineStatuses": [
+    {"statusSeverity": 9, "statusSeverityDescription": "Minor Delays",
+     "reason": "Southern: Minor delays at Clapham Junction. See https://www.nationalrail.co.uk/x/"}]}]
+
+
+def test_national_rail_operator_by_name(net):
+    net.routes["/Line/Mode/national-rail/"] = SOUTHERN_DELAYED
+    result = call("transport.live", {"task": "status", "line": "Southern"})
+    assert result.data["headline"] == "Southern has minor delays."
+    assert not any("://" in point for point in result.data["key_points"])
+
+
+def test_national_rail_problems_add_one_point(net):
+    net.routes["/Line/Mode/national-rail/"] = SOUTHERN_DELAYED
+    result = call("transport.live", {"task": "status"})
+    assert result.data["key_points"][-1] == "National Rail: 1 disrupted"
+    assert len(result.data["key_points"]) <= 3
+
+
+def test_national_rail_failure_is_ignored(net):
+    net.routes["/Line/Mode/national-rail/"] = http_error(500)
+    assert call("transport.live", {"task": "status"}).data["headline"].startswith("1 of 2 lines")

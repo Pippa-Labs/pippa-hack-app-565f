@@ -8,7 +8,7 @@ from datetime import datetime
 import l1_geo
 import l1_tfl
 from l1_http import NeedsInput, NotFound, refuse
-from pippa_agentapp_sdk import ServiceUnavailableError
+from pippa_agentapp_sdk import AgentAppError, ServiceUnavailableError
 
 SOURCE = l1_tfl.SOURCE  # TfL requires this exact attribution
 GOOD_SERVICE = 10
@@ -33,20 +33,33 @@ def _line_name(name: str) -> str:
     return f"the {name}" if name.lower().endswith(("line", "dlr")) else f"the {name} line"
 
 
+def _tfl_and_rail_statuses() -> tuple[list[dict], list[dict]]:
+    """TfL lines and National Rail operators in parallel; National Rail is optional."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        tfl = pool.submit(l1_tfl.line_statuses)
+        rail = pool.submit(l1_tfl.line_statuses, "national-rail")
+        try:
+            rail_lines = rail.result()
+        except AgentAppError:
+            rail_lines = []
+        return tfl.result(), rail_lines
+
+
 def line_status(inputs: dict, now: datetime) -> dict:
     """Current status of every line, or of the one line named."""
-    lines = l1_tfl.line_statuses()
+    lines, rail = _tfl_and_rail_statuses()
     if not lines:
         raise ServiceUnavailableError("TfL line status came back empty")
     wanted = _text(inputs, "line").lower().removesuffix(" line")
     if wanted:
-        lines = [line for line in lines if wanted in line["line"].lower()]
+        lines = ([line for line in lines if wanted in line["line"].lower()]
+                 or [line for line in rail if wanted in line["line"].lower()])
         if not lines:
             raise refuse(NotFound, f"I could not find a line called {_text(inputs, 'line')}.", f"no line {wanted!r}")
     problems = [line for line in lines if line["severity"] != GOOD_SERVICE]
     if wanted and len(lines) == 1:
         line = lines[0]
-        name = _line_name(line["line"])
+        name = line["line"] if line in rail else _line_name(line["line"])
         headline = f"{name[0].upper()}{name[1:]} has {line['status'].lower()}."
         points = [] if line["severity"] == GOOD_SERVICE else [_short_reason(line)]
     elif problems:
@@ -57,12 +70,15 @@ def line_status(inputs: dict, now: datetime) -> dict:
     else:
         headline = "Good service on every Tube, Overground, Elizabeth and DLR line."
         points = []
+    rail_problems = [line for line in rail if line["severity"] != GOOD_SERVICE]
+    if not wanted and rail_problems:
+        points = points[:MAX_POINTS - 1] + [f"National Rail: {len(rail_problems)} disrupted"]
     return {"headline": headline, "key_points": points[:MAX_POINTS] or ["No delays reported"], "source": SOURCE}
 
 
 def _short_reason(line: dict) -> str:
     """The first few words of TfL's reason, or the status alone."""
-    words = _reason(line).rstrip(".").split()
+    words = [word for word in _reason(line).rstrip(".").split() if "://" not in word]
     return " ".join(words[:7]) if words else line["status"]
 
 
