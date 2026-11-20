@@ -45,7 +45,7 @@ No paragraphs. Every answer leads with **one line of 15 words or fewer**, then u
 | 🌇 **Evening plans** | *dinner at Marble Arch at 6, can I catch the sunset* | Whether you can make the sunset first, a nearby spot to watch it from, and the weather on the way |
 | 💷 **Transportation fares** | *cheapest way to pay for the tube, I'm a student here for a year* | Contactless versus Oyster versus Travelcards versus the 18+ Student Oyster, with your saving, plus single fares and airport fares |
 | 🌤️ **Outdoors** | *is it a good time for a walk* | Go, wait or skip, how long it will stay dry, air quality, sunset, and a nearby park |
-| 🆘 **Safety** | *I feel unsafe, where can I get help* | Discreet help options, your local police neighbourhood team, and the nearest station help point |
+| 🆘 **Safety** | *I feel unsafe, where can I get help* | Discreet help options (silent 999 with 55, text 61016, Ask for Angela), and your local police neighbourhood team with the 101 non-emergency number |
 
 Pocket Londoner understands landmarks ("Marble Arch"), stations, postcodes and everyday times ("by 6", "half six").
 
