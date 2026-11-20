@@ -23,10 +23,6 @@ def _short_name(name: str) -> str:
     return STATION_SUFFIX.sub("", name)
 
 
-def as_of(now: datetime) -> str:
-    return now.astimezone(l1_tfl.LONDON).isoformat(timespec="minutes")
-
-
 # --- Step-free verdict ---
 def _lift_count(facilities: dict) -> int:
     lifts = facilities.get("Lifts", "")
@@ -45,16 +41,16 @@ def _step_free(facilities: dict, faults: list[str]) -> str:
     return "partial" if verdict == "yes" and faults else verdict
 
 
-def _facts(facilities: dict, lifts: str, faults: list[str]) -> list[str]:
-    facts = []
+def _points(facilities: dict, lifts: str, faults: list[str]) -> list[str]:
+    """Short points: faults first, then lift count and access quirks."""
+    points = [f"{len(faults)} lift fault(s) reported now"] if faults else []
     if lifts:
-        facts.append(f"TfL lists {lifts} at this station.")
+        points.append(f"TfL lists {lifts}")
     if facilities.get("LimitedCapacityLift", "").lower() == YES:
-        facts.append("The lift has limited capacity.")
+        points.append("Lift has limited capacity")
     if facilities.get("SpecificEntranceRequired", "").lower() == YES:
-        facts.append("A specific entrance is needed for step-free access.")
-    facts.append(f"{len(faults)} lift fault(s) reported right now." if faults else "No lift faults reported right now.")
-    return facts
+        points.append("Needs a specific entrance")
+    return points
 
 
 # --- Station access ---
@@ -76,7 +72,7 @@ def station_access(station_name: str) -> dict:
         "step_free": _step_free(facilities, faults),
         "faults": faults,
         "help_points": facilities.get("Help Points", ""),
-        "facts": _facts(facilities, lifts, faults),
+        "points": _points(facilities, lifts, faults),
     }
 
 
@@ -84,29 +80,27 @@ def station_access(station_name: str) -> dict:
 def _headline(access: dict) -> str:
     name, state, faults = access["name"], access["step_free"], access["faults"]
     if state == "unknown":
-        return f"TfL does not say whether {name} has step-free access, so check before you travel."
+        return f"TfL doesn't say if {name} is step-free; check before you go."
     if state == "no":
-        return f"TfL lists no step-free access via lift at {name}."
+        return f"{name} has no step-free access via lift."
     if faults:
-        return f"{name} has step-free access via lift, but a lift is out of service: {faults[0]}"
-    return f"{name} has step-free access via lift, and no lift faults are reported right now."
+        return f"{name} is step-free, but a lift is out of service."
+    return f"{name} is step-free via lift; no lift faults reported."
 
 
 # --- Entry: step_free_check ---
 def step_free_check(inputs: dict, now: datetime) -> dict:
-    """Step-free verdict and advice for the station in inputs['place']."""
+    """Step-free verdict for the station in inputs['place']."""
     place = _present((inputs or {}).get("place"))
     if not place:
         raise refuse(NeedsInput, "Which station? Tell me its name and I will check its lifts and step-free access.", "no station")
     access = station_access(place)
-    facts = list(access["facts"])
+    points = list(access["points"])
     if access["faults"] or access["step_free"] == "unknown":
-        facts.append("Check TfL Go or ask station staff before you set out.")
-        facts.append("Plan a step-free route with the TfL journey planner.")
+        points.insert(0, "Check TfL Go before you set out")
     return {
         "headline": _headline(access),
-        "facts": facts[:6],
+        "key_points": points[:3] or ["No lift details listed"],
         "source": l1_tfl.SOURCE,
-        "as_of": as_of(now),
         "place": access["name"],
     }

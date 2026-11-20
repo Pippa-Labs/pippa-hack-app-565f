@@ -1,4 +1,4 @@
-"""Level 2: recorded street crime near a London place."""
+"""Level 2: recorded street crime near London places."""
 
 from __future__ import annotations
 
@@ -9,21 +9,32 @@ import l1_geo
 import l1_police
 from l1_http import NeedsInput, refuse
 
-TOP_CATEGORIES = 4
+SOURCE = "data.police.uk"
+NOT_A_RATING = "Recorded incidents, not a safety rating"
+TOP_CATEGORIES = 2
 
 
 # --- Wording ---
-def _month_name(month: str) -> str:
+def month_name(month: str) -> str:
     """'2026-09' as 'September 2026'."""
     return datetime.strptime(month, "%Y-%m").strftime("%B %Y")
 
 
-def _headline(total: int, month_name: str, label: str) -> str:
-    """One sentence with the total, the month and the place."""
-    if total == 0:
-        return f"No crimes were recorded in {month_name} within about a mile of {label}."
-    noun = "crime was" if total == 1 else "crimes were"
-    return f"In {month_name}, {total:,} {noun} recorded within about a mile of {label}."
+# --- Counts for one or more places (one month lookup shared by all) ---
+def _locate(place) -> dict:
+    """A resolved point stays as it is; a place name is resolved."""
+    return place if isinstance(place, dict) else l1_geo.resolve(str(place))
+
+
+def recorded_near(places: list) -> dict:
+    """Latest month and per-place counts: {"month", "places": [{"label", "total", "by_category"}]}."""
+    with ThreadPoolExecutor(max_workers=len(places) + 1) as pool:
+        month_job = pool.submit(l1_police.crime_last_updated)
+        point_jobs = [pool.submit(_locate, place) for place in places]
+        month, points = month_job.result(), [job.result() for job in point_jobs]
+        count_jobs = [pool.submit(l1_police.street_crime_counts, p["lat"], p["lon"], month) for p in points]
+        counts = [job.result() for job in count_jobs]
+    return {"month": month, "places": [{"label": point["label"], **count} for point, count in zip(points, counts)]}
 
 
 # --- Crime watch entry ---
@@ -36,21 +47,14 @@ def crime_watch(inputs: dict, now: datetime) -> dict:
             "Tell me a London postcode, station or area and I will look up recorded crime there.",
             "no place given",
         )
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        located = pool.submit(l1_geo.resolve, str(place))
-        latest = pool.submit(l1_police.crime_last_updated)
-        point, month = located.result(), latest.result()
-    counts = l1_police.street_crime_counts(point["lat"], point["lon"], month)
-    month_name = _month_name(counts["month"])
-    top = [f"{name}: {count:,}" for name, count in counts["by_category"][:TOP_CATEGORIES]]
-    facts = top + [
-        f"Data for {month_name}: police.uk publishes about two months behind.",
-        "These are recorded incidents, not a safety rating.",
-    ]
+    found = recorded_near([str(place)])
+    near = found["places"][0]
+    count = f"{near['total']:,} crime{'' if near['total'] == 1 else 's'}" if near["total"] else "No crimes"
+    top = [f"{name}: {number:,}" for name, number in near["by_category"][:TOP_CATEGORIES]]
     return {
-        "headline": _headline(counts["total"], month_name, point["label"]),
-        "facts": facts,
-        "source": l1_police.ATTRIBUTION,
-        "as_of": counts["month"],
-        "data_month": counts["month"],
+        "headline": f"{count} recorded near {near['label']} in {month_name(found['month'])}; not a safety rating.",
+        "key_points": [*top, NOT_A_RATING],
+        "source": SOURCE,
+        "data_month": found["month"],
+        "place": near["label"],
     }

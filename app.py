@@ -1,4 +1,4 @@
-"""London Companion: validates the manifest and dispatches each outcome to its module."""
+"""Pocket Londoner: validates the manifest and dispatches each outcome to its module."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import l2_best_route
 import l2_crime_watch
 import l2_fare_advisor
 import l2_get_help
+import l2_going_out
 import l2_live
 import l2_step_free
 import l2_walk_now
@@ -47,6 +48,7 @@ ROUTES = {
     "outdoors.walk": {
         "weather": l2_walk_now.weather_watch,
         "walk": l2_walk_now.walk_now,
+        "going_out": l2_going_out.going_out,
     },
     "safety.help": {
         "help": l2_get_help.get_help,
@@ -54,7 +56,7 @@ ROUTES = {
     },
 }
 
-BASE_FIELDS = ("headline", "facts", "source", "as_of")
+BASE_FIELDS = ("headline", "key_points", "source")
 
 
 class UnreadableData(AgentAppError):
@@ -67,7 +69,7 @@ class UnreadableData(AgentAppError):
 class UnknownOutcome(AgentAppError):
     """Pippa asked for an outcome this app does not declare."""
 
-    user_message = "London Companion cannot answer that kind of question."
+    user_message = "Pocket Londoner cannot answer that kind of question."
     retryable = False
 
 
@@ -92,12 +94,14 @@ def _default_task(outcome_id: str, inputs: dict) -> str:
     if outcome_id == "transport.live":
         return "departures" if has("place") and not has("line") else "status"
     if outcome_id == "outdoors.walk":
+        if inputs.get("tonight") is True or any(has(name) for name in ("from_time", "until_time", "cold_below_c")):
+            return "going_out"
         return "walk" if has("minutes") else "weather"
     return "help"
 
 
 class App:
-    """London Companion: fares, journeys, live transport, walking weather and help."""
+    """Pocket Londoner: fares, journeys, live transport, walking weather and help."""
 
     def __init__(self) -> None:
         self._manifest = validate_manifest(load_manifest_file(MANIFEST_PATH))
@@ -133,4 +137,4 @@ class App:
         missing = [name for name in BASE_FIELDS if name not in data]
         if missing:
             raise AgentAppError(f"{call.outcome_id}/{task} returned no {missing}")
-        return Result(data=data, narrative=answer["headline"])
+        return Result(data=data, narrative=data["headline"])

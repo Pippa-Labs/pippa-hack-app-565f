@@ -1,25 +1,31 @@
-"""Level 2: plan the best TfL journey between two places the person named."""
+"""Level 2: plan the best TfL journey between two places, including late-night routes."""
 
 from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, time
 
+import l1_clock
 import l1_geo
 import l1_tfl
 from l1_http import NeedsInput, refuse
+from pippa_agentapp_sdk import AgentAppError
 
 LONDON = l1_tfl.LONDON
-CLOCK = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
-STALE_AFTER = timedelta(hours=1)
+SOURCE = l1_tfl.SOURCE  # TfL requires this exact attribution
 NEEDS_PLACES = "Tell me where you are starting from and where you are going."
-TITLES = {
-    "fastest": "Fastest way",
-    "fewest_changes": "Way with fewest changes",
-    "least_walking": "Way with least walking",
-    "step_free": "Step-free way",
-}
+EVENING_WORDS = re.compile(
+    r"\b(dinner|supper|drinks|evening|tonight|theatre|show|concert|party|after work)\b", re.IGNORECASE)
+MAX_VEHICLES = 3
+GOOD_SERVICE = 10
+NIGHT_MODES = "tube,bus,overground,elizabeth-line,dlr,walking"
+NIGHT_STARTS = time(23, 0)
+NIGHT_ENDS = time(5, 0)
+DEFAULT_NIGHT_DEPARTURE = time(23, 30)
+NIGHT_TUBE_AFTER = time(0, 30)
+NIGHT_BUS_NOTE = "Night buses run every night"
+NIGHT_TUBE_NOTE = "Night Tube runs Friday and Saturday nights"
 
 
 # --- Inputs ---
@@ -36,42 +42,43 @@ def place_names(inputs: dict) -> tuple[str, str]:
     return start, end
 
 
-def clock_time(text, now: datetime) -> datetime:
-    """HH:MM on now's London date, or tomorrow if it passed more than an hour ago."""
-    match = CLOCK.match(clean(text))
-    if not match:
-        raise refuse(NeedsInput, "Give the time as HH:MM, for example 18:30.", f"bad clock time {text!r}")
-    local_now = now.astimezone(LONDON)
-    moment = local_now.replace(hour=int(match.group(1)), minute=int(match.group(2)), second=0, microsecond=0)
-    return moment + timedelta(days=1) if local_now - moment > STALE_AFTER else moment
+def is_evening(inputs: dict) -> bool:
+    """True when the occasion (dinner, drinks, theatre...) or `tonight` says a bare hour means pm."""
+    return inputs.get("tonight") is True or bool(EVENING_WORDS.search(clean(inputs.get("occasion"))))
+
+
+def clock_time(text, now: datetime, *, evening: bool = False) -> datetime:
+    """The next London time the person meant ("6", "half six", "18:30")."""
+    return l1_clock.parse_clock(clean(text), now, evening=evening)
 
 
 # --- Planning ---
+def route_between(start: dict, end: dict, preference: str = "fastest", *, when: datetime | None = None,
+                  arriving: bool = False, modes: str | None = None) -> list[dict]:
+    """TfL journeys between two resolved points."""
+    return l1_tfl.journey(
+        f"{start['lat']},{start['lon']}", f"{end['lat']},{end['lon']}", when=when, arriving=arriving,
+        preference="fastest" if preference == "step_free" else preference, modes=modes,
+        step_free=preference == "step_free",
+    )
+
+
 def plan(inputs: dict, now: datetime, *, when: datetime | None = None, arriving: bool = False,
          modes: str | None = None) -> dict:
-    """Resolve both places and return the best journey plus every option and the start point."""
+    """Resolve both places and return the best journey plus every option and both points."""
     start_text, end_text = place_names(inputs)
     preference = clean(inputs.get("preference")) or "fastest"
     with ThreadPoolExecutor(max_workers=2) as pool:
         start_job, end_job = pool.submit(l1_geo.resolve, start_text), pool.submit(l1_geo.resolve, end_text)
         start, end = start_job.result(), end_job.result()
-    journeys = l1_tfl.journey(
-        f"{start['lat']},{start['lon']}", f"{end['lat']},{end['lon']}", when=when, arriving=arriving,
-        preference="fastest" if preference == "step_free" else preference, modes=modes,
-        step_free=preference == "step_free",
-    )
+    journeys = route_between(start, end, preference, when=when, arriving=arriving, modes=modes)
     return {"journey": journeys[0], "journeys": journeys, "from": start_text, "to": end_text,
-            "start_point": start, "preference": preference}
+            "start_point": start, "end_point": end, "preference": preference}
 
 
 # --- Describing a journey ---
 def hhmm(moment: datetime) -> str:
     return moment.astimezone(LONDON).strftime("%H:%M")
-
-
-def as_of(now: datetime) -> str:
-    """ISO London time to the minute."""
-    return now.astimezone(LONDON).strftime("%Y-%m-%dT%H:%M")
 
 
 def vehicle_label(leg: dict) -> str:
@@ -88,20 +95,10 @@ def ride_legs(journey: dict) -> list[dict]:
     return [leg for leg in journey["legs"] if leg["mode"] != "walking"]
 
 
-def leg_fact(leg: dict) -> str:
-    if leg["mode"] == "walking":
-        return f"Walk {leg['minutes']} min"
-    return f"{leg['summary']}, {leg['minutes']} min"
-
-
-def leg_facts(journey: dict) -> list[str]:
-    """One fact per leg, skipping walks of a minute or less."""
-    return [leg_fact(leg) for leg in journey["legs"] if leg["mode"] != "walking" or leg["minutes"] > 1]
-
-
 def route_words(journey: dict) -> str:
-    """The vehicles used, in order, joined for a headline."""
-    return ", then ".join(vehicle_label(leg) for leg in ride_legs(journey)) or "walking"
+    """The vehicles used, in order: 'Victoria line + bus 38'."""
+    labels = list(dict.fromkeys(vehicle_label(leg) for leg in ride_legs(journey)))
+    return " + ".join(labels[:MAX_VEHICLES]) or "Walk"
 
 
 def extras(journey: dict) -> dict:
@@ -109,23 +106,83 @@ def extras(journey: dict) -> dict:
             "arrive_at": hhmm(journey["arrival"])}
 
 
-# --- Entry ---
+def times_point(journey: dict) -> str:
+    return f"Leave {hhmm(journey['start'])}, arrive {hhmm(journey['arrival'])}"
+
+
+def line_problems(statuses: list[dict], journey: dict) -> list[str]:
+    """'Central: Minor Delays' for each tube or rail line this journey uses that is not running well."""
+    used = " ".join(f"{leg['line']} {leg['summary']}".lower() for leg in ride_legs(journey) if leg["mode"] != "bus")
+    return [f"{status['line']}: {status['status']}" for status in statuses
+            if status["severity"] != GOOD_SERVICE and status["line"].lower() in used]
+
+
+# --- Entry: best route ---
 def best_route(inputs: dict, now: datetime) -> dict:
     """Best journey between two places, optionally leaving at depart_at."""
     depart_at = clean(inputs.get("depart_at"))
-    when = clock_time(depart_at, now) if depart_at else None
-    found = plan(inputs, now, when=when)
-    journey = found["journey"]
-    title = TITLES.get(found["preference"], TITLES["fastest"])
-    facts = leg_facts(journey)
+    when = clock_time(depart_at, now, evening=is_evening(inputs)) if depart_at else None
+    journey = plan(inputs, now, when=when)["journey"]
+    points = [times_point(journey)]
     if journey["fare_gbp"] is not None:
-        facts.append(f"Pay-as-you-go fare: £{journey['fare_gbp']:.2f}")
-    facts.extend(journey["disruptions"][:2])
+        points.append(f"£{journey['fare_gbp']:.2f} with contactless")
+    if journey["disruptions"]:
+        points.append("Disruption reported on this route")
     return {
-        "headline": (f"{title} from {found['from']} to {found['to']}: {route_words(journey)}, "
-                     f"{journey['duration_minutes']} minutes, arriving {hhmm(journey['arrival'])}."),
-        "facts": facts[:6],
-        "source": l1_tfl.SOURCE,
-        "as_of": as_of(now),
+        "headline": f"{route_words(journey)}, {journey['duration_minutes']} min. {points[0]}.",
+        "key_points": points,
+        "source": SOURCE,
         **extras(journey),
     }
+
+
+# --- Late-night routes (used by night_journey and the evening plan) ---
+def is_night(moment: datetime) -> bool:
+    local = moment.astimezone(LONDON).time()
+    return local >= NIGHT_STARTS or local < NIGHT_ENDS
+
+
+def night_departure(inputs: dict, now: datetime) -> tuple[datetime, bool]:
+    """When to leave, and whether 23:30 tonight was assumed."""
+    if clean(inputs.get("depart_at")):
+        return clock_time(inputs["depart_at"], now, evening=True), False
+    if is_night(now):
+        return now, False
+    tonight = now.astimezone(LONDON).replace(hour=DEFAULT_NIGHT_DEPARTURE.hour,
+                                             minute=DEFAULT_NIGHT_DEPARTURE.minute, second=0, microsecond=0)
+    return tonight, True
+
+
+def uses_night_bus(journey: dict) -> bool:
+    return any(leg["mode"] == "bus" and leg["line"].startswith("N") for leg in journey["legs"])
+
+
+def uses_night_tube(journey: dict) -> bool:
+    """A tube leg on a journey starting between 00:30 and 05:00."""
+    start = journey["start"].astimezone(LONDON).time()
+    return any(leg["mode"] == "tube" for leg in journey["legs"]) and NIGHT_TUBE_AFTER <= start < NIGHT_ENDS
+
+
+def choose_night(journeys: list[dict]) -> dict:
+    """The shortest journey using night services, else the shortest overall."""
+    night = [j for j in journeys if uses_night_bus(j) or uses_night_tube(j)]
+    return min(night or journeys, key=lambda j: j["duration_minutes"])
+
+
+def _statuses() -> list[dict]:
+    try:
+        return l1_tfl.line_statuses()
+    except AgentAppError:
+        return []  # a missing status check should not hide the route
+
+
+def night_route(frm_text: str, to_text: str, when: datetime, now: datetime) -> dict:
+    """Late route between two place names: {journey, notes, extras}; notes are night-service and line notes."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        statuses = pool.submit(_statuses)
+        found = plan({"from_place": frm_text, "to_place": to_text}, now, when=when, modes=NIGHT_MODES)
+        journey = choose_night(found["journeys"])
+        problems = line_problems(statuses.result(), journey)
+    notes = [NIGHT_BUS_NOTE] if uses_night_bus(journey) else []
+    notes += [NIGHT_TUBE_NOTE] if uses_night_tube(journey) else []
+    return {"journey": journey, "notes": notes + problems, "extras": extras(journey)}

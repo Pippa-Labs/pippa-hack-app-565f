@@ -12,8 +12,11 @@ import l1_tfl
 from l1_http import NeedsInput, NotFound, refuse
 from pippa_agentapp_sdk import AgentAppError
 
+SOURCE = l1_tfl.SOURCE  # TfL requires this exact attribution
+TABLE_SOURCE = "TfL fares 2026"
+MAX_POINTS = 3
+STATION_SUFFIX = re.compile(r"\s+(Underground|Rail|DLR|Overground)?\s*Station$", re.IGNORECASE)
 DEFAULT_STAY_DAYS = 7
-DEFAULT_RIDES_PER_DAY = 4
 DAYS_PER_MONTH_CARD = 28  # a monthly Travelcard covers about four weeks
 CARDS = ("uk_contactless", "foreign_contactless", "none")
 ZONE_CHOICES = "1-2, 1-3, 1-4 or 1-6"
@@ -123,32 +126,25 @@ def _options(zones: str, stay_days: int, days_per_week: int, bus_only: bool, stu
 # --- Best ticket ---
 def _why(best: dict, stay_days: int, days_per_week: int, daily: int, weekly: int) -> str:
     if not best["name"].startswith("Pay as you go"):
-        return "it beats the pay as you go caps"
+        return "Beats the pay as you go caps"
     capped_week = any(days * daily > weekly for days in _travelling_blocks(stay_days, days_per_week))
-    return "the weekly cap kicks in" if capped_week else "the daily cap limits each day"
+    return "Weekly cap kicks in" if capped_week else "Daily cap limits each day"
 
 
-def _facts(options: list[dict], fee_pence: int, card: str, student: bool, bus_only: bool, rides: int) -> list[str]:
-    facts = [f"{o['name']}: {'at most ' if o['name'].startswith('Pay as you go') else ''}{_text(o['pence'])}"
-             for o in options]
-    if any(o["name"] == "Monthly Travelcard" for o in options):
-        facts.append(f"Monthly Travelcard price is about {fares.MONTHLY_FACTOR} times the 7-day price (derived, not an official fare)")
+def _caveats(fee_pence: int, card: str, student: bool, bus_only: bool) -> list[str]:
+    points = []
     if card == "none":
-        facts.append(f"Oyster card fee of {_text(fee_pence)} is included (a Visitor Oyster costs "
-                     f"{_text(fares.VISITOR_OYSTER_FEE_PENCE)}, fee not refundable)")
+        points.append(f"Includes {_text(fee_pence)} Oyster card fee")
     if card == "foreign_contactless":
-        facts.append("Foreign contactless cards are capped too, but some are refused and your card issuer may charge fees")
+        points.append("Some foreign cards charge fees")
     if student and not bus_only:
-        facts.append("Student discount is 30% on Travelcards only and needs an 18+ Student Oyster for London residents")
-    if not bus_only:
-        facts.append(f"Pay as you go figures assume the daily cap is reached; {rides} rides a day may cost less")
-    return facts[:6]
+        points.append("Student 30% off Travelcards only")
+    return points
 
 
 def best_ticket(inputs: dict, now: datetime) -> dict:
     """Cheapest way to pay for a stay: contactless caps, Travelcards or bus options."""
     stay_days = max(1, _whole_number(inputs.get("stay_days"), DEFAULT_STAY_DAYS))
-    rides = max(1, _whole_number(inputs.get("rides_per_day"), DEFAULT_RIDES_PER_DAY))
     days_per_week = min(7, max(1, _whole_number(inputs.get("days_per_week"), 7)))
     bus_only, student = _truthy(inputs.get("bus_only")), _truthy(inputs.get("student"))
     zones, card = _parse_zones(inputs.get("zones")), _parse_card(inputs.get("card"))
@@ -163,12 +159,11 @@ def best_ticket(inputs: dict, now: datetime) -> dict:
     way = best["name"] if card != "none" else best["name"].replace("with contactless", "with Oyster")
     at_most = "at most " if best["name"].startswith("Pay as you go") else ""
     unit = "day" if stay_days == 1 else "days"
+    points = [_why(best, stay_days, days_per_week, daily, weekly), *_caveats(fee_pence, card, student, bus_only)]
     return {
-        "headline": (f"{way} {'are' if way.endswith('Travelcards') else 'is'} cheapest for {stay_days} {unit} {place}: {at_most}{_text(total)}, "
-                     f"because {_why(best, stay_days, days_per_week, daily, weekly)}."),
-        "facts": _facts(options, fee_pence, card, student, bus_only, rides),
-        "source": fares.SOURCE,
-        "as_of": fares.FARES_AS_OF,
+        "headline": f"{way}: {at_most}{_text(total)} for {stay_days} {unit} {place}.",
+        "key_points": points[:MAX_POINTS],
+        "source": TABLE_SOURCE,
         "best_option": way,
         "cost_gbp": _gbp(total),
     }
@@ -183,8 +178,9 @@ def _is_peak(fare_row: dict) -> bool:
     return fare_row["time"].lower().replace(" ", "") == "peak"
 
 
-def _london_minute(now: datetime) -> str:
-    return now.astimezone(l1_tfl.LONDON).isoformat(timespec="minutes")
+def _station(name: str) -> str:
+    """'Oxford Circus Underground Station' as 'Oxford Circus'."""
+    return STATION_SUFFIX.sub("", name)
 
 
 def _both_stations(from_place: str, to_place: str) -> tuple[dict, dict]:
@@ -194,7 +190,7 @@ def _both_stations(from_place: str, to_place: str) -> tuple[dict, dict]:
 
 
 def single_fare(inputs: dict, now: datetime) -> dict:
-    """Pay as you go peak and off-peak single fares between two stations."""
+    """Pay as you go fare between two stations: off-peak unless peak was asked for."""
     from_place, to_place = inputs.get("from_place"), inputs.get("to_place")
     if not (_present(from_place) and _present(to_place)):
         raise refuse(NeedsInput, "Which two stations do you want the fare between? Tell me where from and where to.",
@@ -208,15 +204,14 @@ def single_fare(inputs: dict, now: datetime) -> dict:
     peak = next((row for row in payg if _is_peak(row)), None)
     off_peak = next((row for row in payg if not _is_peak(row)), None)
     chosen = peak if _truthy(inputs.get("peak")) and peak else (off_peak or peak)
-    names = f"{start['name']} to {end['name']}"
-    parts = [f"{label} £{row['cost_gbp']:.2f}" for label, row in (("peak", peak), ("off-peak", off_peak)) if row]
-    facts = [f"{row['ticket']}, {row['time']}: £{row['cost_gbp']:.2f}" for row in rows]
-    facts.append("Daily and weekly caps still apply, so you never pay more than the cap in a day")
+    label = "peak" if chosen is peak else "off-peak"
+    other = [f"{name.capitalize()} £{row['cost_gbp']:.2f}" for name, row in (("peak", peak), ("off-peak", off_peak))
+             if row and row is not chosen]
     return {
-        "headline": f"Pay as you go from {names} is {' and '.join(parts)}.",
-        "facts": facts[:6],
-        "source": l1_tfl.SOURCE,
-        "as_of": _london_minute(now),
+        "headline": (f"£{chosen['cost_gbp']:.2f} {label} with contactless, "
+                     f"{_station(start['name'])} to {_station(end['name'])}."),
+        "key_points": [*other, "Daily cap still applies"],
+        "source": SOURCE,
         "best_option": f"{chosen['ticket']} ({chosen['time']})",
         "cost_gbp": round(float(chosen["cost_gbp"]), 2),
     }
@@ -232,18 +227,18 @@ def _parse_airport(value) -> str:
     return airport
 
 
-def _table_facts(airport: str) -> list[str]:
-    facts = []
-    for option in fares.AIRPORTS[airport]:
-        price = (f"{_text(option['price_pence'])}" if option["price_pence"] is not None
-                 else "price not checked, see the operator")
-        cap = "counts toward the daily cap" if option["capped"] else "outside the daily cap"
-        facts.append(f"{option['name']}: {price}; {cap}")
-    return facts
+def _short_option(name: str) -> str:
+    """'National Rail (Thameslink, Southern or Gatwick Express)' as 'National Rail'."""
+    return name.split(" (")[0].split(",")[0]
 
 
-def _live_fare_fact(airport: str, from_place: str) -> tuple[str, float] | None:
-    """A live pay as you go fare line and its price, or None when TfL cannot give one."""
+def _option_point(option: dict) -> str:
+    price = _text(option["price_pence"]) if option["price_pence"] is not None else "check price"
+    return f"{_short_option(option['name'])}: {price}"
+
+
+def _live_fare(airport: str, from_place: str) -> tuple[str, float] | None:
+    """The start station's short name and its peak pay as you go fare, or None when TfL cannot give one."""
     try:
         start, end = _both_stations(from_place, AIRPORT_STATIONS[airport])
         rows = [row for row in l1_tfl.fare(start["id"], end["id"]) if _is_payg(row)]
@@ -252,40 +247,30 @@ def _live_fare_fact(airport: str, from_place: str) -> tuple[str, float] | None:
     if not rows:
         return None
     row = max(rows, key=lambda candidate: candidate["cost_gbp"])  # peak is the higher fare
-    return f"Pay as you go from {start['name']} is £{row['cost_gbp']:.2f} ({row['time']})", float(row["cost_gbp"])
-
-
-def _airport_headline(airport: str, priced: list[dict], total: int) -> str:
-    name = AIRPORT_NAMES[airport]
-    if not priced:
-        return f"I have no verified price for getting to {name}; the facts list the options to check with the operator."
-    cheapest = min(priced, key=lambda option: option["price_pence"])
-    unpriced = total - len(priced)
-    tail = f"; {unpriced} other {'option was' if unpriced == 1 else 'options were'} not priced here" if unpriced else ""
-    return f"{cheapest['name']} to {name} costs {_text(cheapest['price_pence'])}{tail}."
+    return _station(start["name"]), float(row["cost_gbp"])
 
 
 def airport_fare(inputs: dict, now: datetime) -> dict:
-    """Ways to reach a London airport with prices where they are known."""
+    """Cheapest known way to reach a London airport."""
     airport = _parse_airport(inputs.get("airport"))
+    name = AIRPORT_NAMES[airport]
     from_place = inputs.get("from_place")
-    live = _live_fare_fact(airport, str(from_place).strip()) if _present(from_place) and airport in AIRPORT_STATIONS else None
+    live = _live_fare(airport, str(from_place).strip()) if _present(from_place) and airport in AIRPORT_STATIONS else None
     options = fares.AIRPORTS[airport]
     priced = [option for option in options if option["price_pence"] is not None]
-    facts = _table_facts(airport)
-    result = {
-        "headline": _airport_headline(airport, priced, len(options)),
-        "facts": facts[:5],
-        "source": fares.SOURCE,
-        "as_of": fares.FARES_AS_OF,
-    }
-    if priced:
-        cheapest = min(priced, key=lambda option: option["price_pence"])
-        result["best_option"], result["cost_gbp"] = cheapest["name"], _gbp(cheapest["price_pence"])
+    points = [_option_point(option) for option in options][:MAX_POINTS]
     if live:
-        line, cost = live
-        result["facts"] = [line, *facts[:4]]
-        result["headline"] = f"{line} to {AIRPORT_NAMES[airport]}."
-        result["source"], result["as_of"] = l1_tfl.SOURCE, _london_minute(now)
-        result["best_option"], result["cost_gbp"] = "Pay as you go", round(cost, 2)
-    return result
+        start, cost = live
+        return {"headline": f"£{cost:.2f} with contactless from {start} to {name}.", "key_points": points,
+                "source": SOURCE, "best_option": "Pay as you go", "cost_gbp": round(cost, 2)}
+    if not priced:
+        return {"headline": f"No checked price for {name}; check {_short_option(options[0]['name'])}.",
+                "key_points": points, "source": TABLE_SOURCE}
+    cheapest = min(priced, key=lambda option: option["price_pence"])
+    return {
+        "headline": f"{_short_option(cheapest['name'])} to {name}: {_text(cheapest['price_pence'])}.",
+        "key_points": points,
+        "source": TABLE_SOURCE,
+        "best_option": cheapest["name"],
+        "cost_gbp": _gbp(cheapest["price_pence"]),
+    }

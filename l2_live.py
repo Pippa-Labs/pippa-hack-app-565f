@@ -4,27 +4,22 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import l1_geo
 import l1_tfl
 from l1_http import NeedsInput, NotFound, refuse
 from pippa_agentapp_sdk import ServiceUnavailableError
 
-LONDON = ZoneInfo("Europe/London")
+SOURCE = l1_tfl.SOURCE  # TfL requires this exact attribution
 GOOD_SERVICE = 10
-MAX_FACTS = 6
+MAX_POINTS = 3
+MAX_ARRIVALS = 6
 MAX_STOPS = 2
 
 
 def _text(inputs: dict, name: str) -> str:
     """A string input, with None and blanks treated as absent."""
     return (inputs.get(name) or "").strip()
-
-
-def _as_of(now: datetime) -> str:
-    """The read time as ISO London time, to the minute."""
-    return now.astimezone(LONDON).replace(second=0, microsecond=0).isoformat()
 
 
 # --- Line status ---
@@ -53,23 +48,22 @@ def line_status(inputs: dict, now: datetime) -> dict:
         line = lines[0]
         name = _line_name(line["line"])
         headline = f"{name[0].upper()}{name[1:]} has {line['status'].lower()}."
-        if line["severity"] == GOOD_SERVICE:
-            facts = [f"No problems reported on {_line_name(line['line'])}."]
-        else:
-            facts = [_reason(line) or f"TfL reports {line['status'].lower()} but gives no reason."]
+        points = [] if line["severity"] == GOOD_SERVICE else [_short_reason(line)]
     elif problems:
-        rest = "; the rest have good service" if len(problems) < len(lines) else ""
-        headline = f"{len(problems)} of {len(lines)} lines have problems right now{rest}."
-        facts = [f"{line['line']}: {line['status']}. {_reason(line)}".strip() for line in problems]
+        headline = f"{len(problems)} of {len(lines)} lines have problems; the rest run well."
+        if len(problems) == len(lines):
+            headline = f"All {len(lines)} lines have problems."
+        points = [f"{line['line']}: {line['status']}" for line in problems]
     else:
-        headline = "Good service on every Tube, Overground, Elizabeth line and DLR line."
-        facts = [f"{len(lines)} lines checked, none with delays."]
-    return {
-        "headline": headline,
-        "facts": facts[:MAX_FACTS],
-        "source": l1_tfl.SOURCE,
-        "as_of": _as_of(now),
-    }
+        headline = "Good service on every Tube, Overground, Elizabeth and DLR line."
+        points = []
+    return {"headline": headline, "key_points": points[:MAX_POINTS] or ["No delays reported"], "source": SOURCE}
+
+
+def _short_reason(line: dict) -> str:
+    """The first few words of TfL's reason, or the status alone."""
+    words = _reason(line).rstrip(".").split()
+    return " ".join(words[:7]) if words else line["status"]
 
 
 # --- Next departures ---
@@ -84,9 +78,9 @@ def _strip_station(name: str) -> str:
 def _merged_arrivals(stop_ids: list[str]) -> list[dict]:
     """Arrivals at several stops at once, soonest first; a bus seen from two stops counts once."""
     with ThreadPoolExecutor(max_workers=len(stop_ids)) as pool:
-        rows = [row for batch in pool.map(l1_tfl.arrivals, stop_ids, [MAX_FACTS] * len(stop_ids)) for row in batch]
+        rows = [row for batch in pool.map(l1_tfl.arrivals, stop_ids, [MAX_ARRIVALS] * len(stop_ids)) for row in batch]
     unique = {(row["line"], row["destination"], row["minutes"]): row for row in rows}
-    return sorted(unique.values(), key=lambda row: row["minutes"])[:MAX_FACTS]
+    return sorted(unique.values(), key=lambda row: row["minutes"])[:MAX_ARRIVALS]
 
 
 def _station_departures(name: str) -> tuple[str, list[dict]]:
@@ -117,22 +111,21 @@ def next_departures(inputs: dict, now: datetime) -> dict:
     except NotFound:
         label, rows = _bus_departures(place)
     if not rows:
-        headline = f"No departures are predicted from {label} right now."
-        facts = ["TfL has no live predictions for this stop at the moment."]
-    else:
-        first = rows[0]
-        headline = f"Next from {label}: {first['line']} to {_strip_station(first['destination'])} {'due now' if first['minutes'] <= 0 else 'in ' + _minutes(first['minutes'])}."
-        facts = [
-            f"{row['line']} to {_strip_station(row['destination'])}: {_minutes(row['minutes'])}"
-            + (f" ({row['platform']})" if row["platform"] else "")
-            for row in rows
-        ]
-    return {"headline": headline, "facts": facts, "source": l1_tfl.SOURCE, "as_of": _as_of(now), "place": label}
+        return {"headline": f"No departures predicted from {label} right now.",
+                "key_points": ["TfL has no live predictions here"], "source": SOURCE, "place": label}
+    first = rows[0]
+    return {
+        "headline": f"Next from {label}: {_departure(first)}.",
+        "key_points": [_departure(row) for row in rows[1:1 + MAX_POINTS]] or ["No later departures predicted"],
+        "source": SOURCE,
+        "place": label,
+    }
 
 
-def _minutes(value: int) -> str:
-    """Minutes until a departure, in words."""
-    return "due now" if value <= 0 else f"{value} min"
+def _departure(row: dict) -> str:
+    """'Victoria to Brixton in 2 min'."""
+    when = "due now" if row["minutes"] <= 0 else f"in {row['minutes']} min"
+    return f"{row['line']} to {_strip_station(row['destination'])} {when}"
 
 
 # --- Santander Cycles docks ---
@@ -144,15 +137,15 @@ def bike_docks(inputs: dict, now: datetime) -> dict:
     docks = l1_tfl.bike_points(place)
     bikes = sum(dock["bikes"] for dock in docks)
     free = sum(dock["empty_docks"] for dock in docks)
-    facts = [
-        f"{' '.join(dock['name'].replace(' ,', ',').split())}: {dock['bikes'] - dock['ebikes']} bikes, "
-        f"{dock['ebikes']} e-bikes, {dock['empty_docks']} free docks"
-        for dock in docks
-    ]
+    busiest = sorted(docks, key=lambda dock: -dock["bikes"])[:MAX_POINTS]
     return {
-        "headline": f"{bikes} hire bikes and {free} free docks across {len(docks)} docks matching {place}.",
-        "facts": facts[:MAX_FACTS],
-        "source": l1_tfl.SOURCE,
-        "as_of": _as_of(now),
+        "headline": f"{bikes} bikes and {free} free docks at {len(docks)} docks near {place}.",
+        "key_points": [f"{_dock_name(dock)}: {dock['bikes']} bikes" for dock in busiest],
+        "source": SOURCE,
         "place": place,
     }
+
+
+def _dock_name(dock: dict) -> str:
+    """The street part of a dock name: 'River Street , Clerkenwell' becomes 'River Street'."""
+    return " ".join(dock["name"].split(",")[0].split())

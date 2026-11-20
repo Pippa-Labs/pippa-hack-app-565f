@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 import l1_geo
 import l1_weather
@@ -12,20 +13,43 @@ LONDON = l1_weather.LONDON
 THUNDER_CODES = {95, 96, 99}
 BAD_AIR = {"very poor", "extremely poor"}
 PARK_RADIUS_KM = 8.0
+SOURCE = "Open-Meteo"
+MAX_POINTS = 3
 
-# --- Curated London parks ---
-PARKS = (
-    ("Hyde Park", 51.5073, -0.1657),
-    ("Regent's Park", 51.5313, -0.1570),
-    ("Victoria Park", 51.5363, -0.0396),
-    ("Hampstead Heath", 51.5608, -0.1650),
-    ("Battersea Park", 51.4793, -0.1568),
-    ("Greenwich Park", 51.4769, 0.0005),
-    ("Clapham Common", 51.4560, -0.1480),
-    ("Richmond Park", 51.4420, -0.2750),
-    ("Brockwell Park", 51.4500, -0.1050),
-    ("Finsbury Park", 51.5703, -0.1058),
+
+# --- Curated London places: big parks for walks, viewpoints for sunsets ---
+class Place(NamedTuple):
+    name: str
+    lat: float
+    lon: float
+    park: bool
+    sunset: bool
+
+
+PLACES = (
+    Place("Hyde Park", 51.5050, -0.1650, park=True, sunset=True),
+    Place("Regent's Park", 51.5313, -0.1570, park=True, sunset=False),
+    Place("Victoria Park", 51.5363, -0.0396, park=True, sunset=False),
+    Place("Hampstead Heath", 51.5608, -0.1650, park=True, sunset=False),
+    Place("Battersea Park", 51.4793, -0.1568, park=True, sunset=False),
+    Place("Greenwich Park", 51.4769, 0.0005, park=True, sunset=True),
+    Place("Clapham Common", 51.4560, -0.1480, park=True, sunset=False),
+    Place("Richmond Park", 51.4420, -0.2750, park=True, sunset=False),
+    Place("Brockwell Park", 51.4500, -0.1050, park=True, sunset=False),
+    Place("Finsbury Park", 51.5703, -0.1058, park=True, sunset=False),
+    Place("Primrose Hill", 51.5394, -0.1609, park=False, sunset=True),
+    Place("Parliament Hill", 51.5600, -0.1590, park=False, sunset=True),
+    Place("Waterloo Bridge", 51.5085, -0.1166, park=False, sunset=True),
 )
+PARKS = tuple(place for place in PLACES if place.park)
+SUNSET_SPOTS = tuple(place for place in PLACES if place.sunset)
+
+
+def nearest(point: dict, places: tuple[Place, ...]) -> tuple[Place, float]:
+    """The closest of `places` to a point, with its distance in km."""
+    return min(((place, l1_geo.distance_km(point["lat"], point["lon"], place.lat, place.lon)) for place in places),
+               key=lambda pair: pair[1])
+
 
 # --- Small helpers ---
 def _blank(value) -> bool:
@@ -69,6 +93,18 @@ def _sentence(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+def _now_point(row: dict) -> str:
+    """'Now partly cloudy, 10°C'."""
+    temperature = f", {round(row['temp_c'])}°C" if row["temp_c"] is not None else ""
+    return f"Now {row['description']}{temperature}"
+
+
+def _with_temperature(result: dict, row: dict) -> dict:
+    if row["temp_c"] is not None:
+        result["temperature_c"] = round(row["temp_c"], 1)
+    return result
+
+
 # --- Weather watch: first notable change ---
 def _first_change(rows: list[dict]) -> str | None:
     """Describe the first rain, gust or UV change after the current hour."""
@@ -85,40 +121,25 @@ def _first_change(rows: list[dict]) -> str | None:
     return None
 
 
-def _rain_fact(rows: list[dict]) -> str:
-    chances = [row["rain_chance"] for row in rows]
-    peak = _top(chances)
+def _rain_point(rows: list[dict]) -> str | None:
+    peak = _top([row["rain_chance"] for row in rows])
     if peak is None:
-        return "No rain forecast available."
-    peak_row = next(row for row in rows if row["rain_chance"] == peak)
-    return f"Rain chance peaks at {round(peak)}% around {_clock(peak_row['time'])}."
-
-
-def _wind_fact(rows: list[dict]) -> str | None:
-    wind, gust = _top([r["wind_kmh"] for r in rows]), _top([r["gust_kmh"] for r in rows])
-    if wind is None and gust is None:
         return None
-    parts = []
-    if wind is not None:
-        parts.append(f"wind up to {round(wind)} km/h")
-    if gust is not None:
-        parts.append(f"gusts up to {round(gust)} km/h")
-    return _sentence(", ".join(parts)) + "."
+    peak_row = next(row for row in rows if row["rain_chance"] == peak)
+    return f"Rain chance up to {round(peak)}% at {_clock(peak_row['time'])}"
 
 
-def _air_fact(air: dict) -> str | None:
-    return f"Air quality is {air['band']}." if air.get("band") else None
+def _sunset_point(weather: dict, now: datetime) -> str:
+    was = " (passed)" if now.astimezone(LONDON) > weather["sunset"] else ""
+    return f"Sunset {_clock(weather['sunset'])}{was}"
 
 
-def _sunset_fact(weather: dict, now: datetime) -> str:
-    sunset = weather["sunset"]
-    if now.astimezone(LONDON) > sunset:
-        return f"Sunset was at {_clock(sunset)}."
-    return f"Sunset is at {_clock(sunset)}."
+def _air_point(air: dict) -> str | None:
+    return f"Air quality {air['band']}" if air.get("band") else None
 
 
-def _present(facts: list) -> list[str]:
-    return [fact for fact in facts if fact]
+def _present(points: list) -> list[str]:
+    return [point for point in points if point]
 
 
 # --- Weather watch entry ---
@@ -129,39 +150,33 @@ def weather_watch(inputs: dict, now: datetime) -> dict:
     weather, air = l1_weather.forecast_and_air(point["lat"], point["lon"], hours, now)
     rows = weather["hours"]
     first = rows[0]
-    change = _first_change(rows)
-    outlook = change if change else f"no big changes expected for {hours} hours"
-    temperature = f" and {round(first['temp_c'])}°C" if first["temp_c"] is not None else ""
-    headline = f"{_sentence(first['description'])}{temperature} in {point['label']} now; {outlook}."
-    facts = _present([_rain_fact(rows), _wind_fact(rows), _air_fact(air), _sunset_fact(weather, now)])
+    temperature = f", {round(first['temp_c'])}°C" if first["temp_c"] is not None else ""
+    change = _first_change(rows) or f"no big change for {hours} h"
     result = {
-        "headline": headline,
-        "facts": facts,
-        "source": l1_weather.ATTRIBUTION,
-        "as_of": first["time"].isoformat(),
+        "headline": f"{_sentence(first['description'])}{temperature} in {point['label']}; {change}.",
+        "key_points": _present([_rain_point(rows), _sunset_point(weather, now), _air_point(air)])[:MAX_POINTS],
+        "source": SOURCE,
     }
-    if first["temp_c"] is not None:
-        result["temperature_c"] = round(first["temp_c"], 1)
-    return result
+    return _with_temperature(result, first)
 
 
 # --- Walk rating ---
 def _rate_hour(row: dict) -> tuple[int, list[str]]:
-    """Rate one hour: 0 go, 1 go with care, 2 wait, with plain reasons."""
+    """Rate one hour: 0 go, 1 go with care, 2 wait, with short reasons."""
     chance, rain_mm, gust = row["rain_chance"] or 0, row["rain_mm"] or 0, row["gust_kmh"] or 0
     level, reasons = 0, []
     if chance >= 70 or rain_mm >= 1:
-        level, reasons = 2, [f"rain is likely around {_clock(row['time'])} ({round(chance)}% chance)"]
+        level, reasons = 2, [f"rain likely at {_clock(row['time'])} ({round(chance)}%)"]
     elif chance >= 40:
-        level, reasons = 1, [f"a {round(chance)}% chance of rain around {_clock(row['time'])}"]
+        level, reasons = 1, [f"{round(chance)}% chance of rain at {_clock(row['time'])}"]
     if gust >= 60:
-        level, reasons = 2, reasons + [f"gusts up to {round(gust)} km/h"]
+        level, reasons = 2, reasons + [f"gusts to {round(gust)} km/h"]
     elif gust >= 40:
-        level, reasons = max(level, 1), reasons + [f"gusts up to {round(gust)} km/h"]
+        level, reasons = max(level, 1), reasons + [f"gusts to {round(gust)} km/h"]
     if row["code"] in THUNDER_CODES:
-        level, reasons = 2, reasons + ["thunderstorms are forecast"]
+        level, reasons = 2, reasons + ["thunderstorms forecast"]
     if row["feels_c"] is not None and row["feels_c"] < 3:
-        level, reasons = max(level, 1), reasons + [f"it feels like {round(row['feels_c'])}°C"]
+        level, reasons = max(level, 1), reasons + [f"feels like {round(row['feels_c'])}°C"]
     return level, reasons
 
 
@@ -173,13 +188,13 @@ def _rate_walk(rows: list[dict], air: dict, start: datetime, ends: datetime, wea
         level = max(level, row_level)
         reasons += [reason for reason in row_reasons if reason not in reasons]
     if air.get("band") in BAD_AIR:
-        level, reasons = 2, reasons + [f"air quality is {air['band']}"]
+        level, reasons = 2, reasons + [f"air quality {air['band']}"]
     elif air.get("band") == "poor":
-        level, reasons = max(level, 1), reasons + ["air quality is poor"]
+        level, reasons = max(level, 1), reasons + ["air quality poor"]
     if start >= weather["sunset"] or start < weather["sunrise"]:
-        level, reasons = max(level, 1), reasons + ["it is already dark"]
+        level, reasons = max(level, 1), reasons + ["already dark"]
     elif ends > weather["sunset"]:
-        level, reasons = max(level, 1), reasons + [f"it will be dark after {_clock(weather['sunset'])}"]
+        level, reasons = max(level, 1), reasons + [f"dark after {_clock(weather['sunset'])}"]
     return level, reasons
 
 
@@ -188,13 +203,10 @@ def _next_better_hour(rows: list[dict], start: datetime) -> dict | None:
     return next((row for row in rows if row["time"] > start and _rate_hour(row)[0] == 0), None)
 
 
-def _nearest_park(point: dict) -> tuple[str, float] | None:
-    """Closest curated park within PARK_RADIUS_KM."""
-    nearest = min(
-        ((name, l1_geo.distance_km(point["lat"], point["lon"], lat, lon)) for name, lat, lon in PARKS),
-        key=lambda pair: pair[1],
-    )
-    return nearest if nearest[1] <= PARK_RADIUS_KM else None
+def _park_point(point: dict) -> str | None:
+    """'Nearest park: Hyde Park, 1.2 km' within PARK_RADIUS_KM."""
+    park, km = nearest(point, PARKS)
+    return f"Nearest park: {park.name}, {km:.1f} km" if km <= PARK_RADIUS_KM else None
 
 
 # --- Walk now entry ---
@@ -211,38 +223,19 @@ def walk_now(inputs: dict, now: datetime) -> dict:
     ends = local_now + timedelta(minutes=minutes)
     window = [r for r in all_rows if r["time"] < ends and r["time"] + timedelta(hours=1) > local_now]
     level, reasons = _rate_walk(window, air, local_now, ends, weather)
-    verdict = VERDICTS[level]
-
     first = window[0]
-    facts = _present([
-        f"Now: {first['description']}, {round(first['temp_c'])}°C." if first["temp_c"] is not None else None,
-        _wind_fact(window),
-        _air_fact(air),
-    ])
-    if level == 2:
-        better = _next_better_hour(all_rows, local_now)
-        facts.append(f"A better time starts around {_clock(better['time'])}." if better
-                     else "No better hour shows up in the next 12 hours.")
-    else:
-        park = _nearest_park(point)
-        if park:
-            facts.append(f"Nearest big park: {park[0]}, about {park[1]:.1f} km away.")
-    facts = facts[:6]
-
-    reason_text = "; ".join(reasons)
     if level == 0:
-        headline = f"Good for a {minutes}-minute walk near {point['label']} now: {first['description']}."
-    elif level == 1:
-        headline = f"Go with care on a {minutes}-minute walk near {point['label']}: {reason_text}."
+        headline = f"Go: {first['description']} near {point['label']}, fine for {minutes} min."
+        extra = _park_point(point)
     else:
-        headline = f"Better to wait before a {minutes}-minute walk near {point['label']}: {reason_text}."
+        headline = f"{_sentence(VERDICTS[level])}: {reasons[0]} near {point['label']}."
+        better = _next_better_hour(all_rows, local_now) if level == 2 else None
+        extra = f"Better from {_clock(better['time'])}" if better else _park_point(point)
+    points = _present([_now_point(first), extra, *(_sentence(reason) for reason in reasons[1:])])
     result = {
         "headline": headline,
-        "facts": facts,
-        "source": l1_weather.ATTRIBUTION,
-        "as_of": all_rows[0]["time"].isoformat(),
-        "verdict": verdict,
+        "key_points": points[:MAX_POINTS],
+        "source": SOURCE,
+        "verdict": VERDICTS[level],
     }
-    if first["temp_c"] is not None:
-        result["temperature_c"] = round(first["temp_c"], 1)
-    return result
+    return _with_temperature(result, first)

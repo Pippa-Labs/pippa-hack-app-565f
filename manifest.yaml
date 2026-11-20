@@ -1,4 +1,4 @@
-# London Companion: the app's contract. Pippa routes on each outcome's summary
+# Pocket Londoner: the app's contract. Pippa routes on each outcome's summary
 # and example_phrases, and refuses any output field not declared here.
 
 manifest_version: 1
@@ -10,12 +10,12 @@ app_author_name: "peppa-pig"
 
 app:
   id: hack.app_565f
-  name: London Companion
+  name: Pocket Londoner
   version: 0.1.0
   # Never use the word "by" here: the badge is split on it.
   summary: >-
-    London helper for Tube, bus and train fares, routes and leave times, live delays,
-    walking weather and police help. Also covers next departures, bike docks
+    London helper for Tube, bus and train fares, routes, live delays, walks,
+    umbrella weather and police help. Also covers next departures, bike docks
     and station lifts, and sends only the places you name to TfL, Open-Meteo,
     postcodes.io and data.police.uk.
 
@@ -25,15 +25,17 @@ agent_types:
 outcomes:
   # ── Journeys ─────────────────────────────────────────────────────────────
   - id: journey.plan
-    summary: Plan a route across London, work out when to set off to arrive on time, or find a late-night way back with night buses and the Night Tube
+    summary: Plan a route across London, work out when to set off to arrive on time, or find a late-night way back with night buses and the Night Tube, with weather and sunset for an evening out
     example_phrases:
       - how do i get from
       - when should i leave to get to
       - night bus from soho to
+      - i need to be at the restaurant by
+      - dinner reservation at
+      - catch the sunset on the way to
+      - and get home after
       - fastest way to get to
-      - best route from kings cross to
       - what time do i need to set off for
-      - how do i get back late at night from
       - route with fewest changes to
     inputs:
       - name: task
@@ -41,9 +43,10 @@ outcomes:
         required: false
         description: >-
           "route" for a route between two places; "leave_by" when the user must
-          arrive by a time and asks when to set off; "night" for travel late at
-          night (after about 23:00) or a night bus or the Night Tube. Return an
-          empty string if unsure.
+          be somewhere by a time (to set off on time, or plan an evening out
+          with sunset and the way home); "night" for travel late at night
+          (after about 23:00) or a night bus or the Night Tube. Return an empty
+          string if unsure.
       - name: from_place
         type: string
         required: false
@@ -55,20 +58,46 @@ outcomes:
         type: string
         required: false
         description: >-
-          Where the journey ends: a station, postcode, landmark or area, as the
-          user wrote it. Return an empty string if the message does not name one.
+          Where the journey ends or where the user needs to be: a station,
+          postcode, landmark or area, as the user wrote it. Return an empty
+          string if the message does not name one.
       - name: arrive_by
         type: string
         required: false
         description: >-
-          The time the user must arrive, as 24-hour HH:MM London time (for
-          example "18:30"). Return an empty string if no arrival time is given.
+          The time the user must arrive, as 24-hour HH:MM London time; convert
+          "by 6 for dinner" to 18:00. Return an empty string if no time is given.
       - name: depart_at
         type: string
         required: false
         description: >-
-          The time the user wants to set off, as 24-hour HH:MM London time.
-          Return an empty string if no departure time is given.
+          The time the user wants to set off, as 24-hour HH:MM London time;
+          convert "at 6 after work" to 18:00. Return an empty string if no time
+          is given.
+      - name: occasion
+        type: string
+        required: false
+        description: >-
+          What the user is going to, in a word or two, such as "dinner",
+          "drinks", "theatre" or "work". Return an empty string if not mentioned.
+      - name: tonight
+        type: boolean
+        required: false
+        description: >-
+          True if the user says tonight or this evening. Leave this out
+          entirely if not mentioned; never guess.
+      - name: return_to
+        type: string
+        required: false
+        description: >-
+          Where the user goes home or back to afterwards, as written. Return an
+          empty string if not mentioned; never assume where they live.
+      - name: return_time
+        type: string
+        required: false
+        description: >-
+          When the user heads back, as 24-hour HH:MM London time. Return an
+          empty string if not mentioned.
       - name: preference
         type: string
         required: false
@@ -81,24 +110,27 @@ outcomes:
         required: false
         description: >-
           Spare minutes the user wants before the arrival time, if they said.
-          Leave this out entirely if they did not.
+          Leave this out entirely if not mentioned; never guess.
+      - name: cold_below_c
+        type: number
+        required: false
+        description: >-
+          The temperature in Celsius below which the user counts it as cold, if
+          they named one. Leave this out entirely if not mentioned; never guess.
     output:
       - name: task
         type: string
         description: Which journey question was answered.
       - name: headline
         type: string
-        description: One sentence with the answer.
-      - name: facts
+        description: One short line, the whole answer. Final; use it as written.
+      - name: key_points
         type: array
         item_type: string
-        description: The legs of the journey, disruptions and lift faults on it.
+        description: Up to 3 short phrases, most important first. Final.
       - name: source
         type: string
-        description: Where the journey data comes from.
-      - name: as_of
-        type: string
-        description: When the journey was planned, as an ISO time.
+        description: Where the data comes from, in a word or two.
       - name: duration_minutes
         type: integer
         required: false
@@ -111,6 +143,35 @@ outcomes:
         type: string
         required: false
         description: When the journey arrives, as HH:MM London time.
+      - name: umbrella_needed
+        type: boolean
+        required: false
+        description: For an evening plan, whether rain or snow is likely on the way or there.
+      - name: wear_more
+        type: boolean
+        required: false
+        description: For an evening plan, whether it will feel colder than the threshold.
+      - name: sunset_plan
+        type: string
+        required: false
+        description: One short line on fitting in the sunset.
+      - name: after_dark
+        type: boolean
+        required: false
+        description: Whether arriving or heading home happens after sunset.
+      - name: return_route
+        type: array
+        item_type: string
+        required: false
+        description: Up to 3 short lines for the way home.
+      - name: crime_note
+        type: string
+        required: false
+        description: One line of recorded crime at both ends; not a safety rating.
+      - name: help_note
+        type: string
+        required: false
+        description: One line of discreet ways to get help.
 
   # ── Live transport ───────────────────────────────────────────────────────
   - id: transport.live
@@ -152,17 +213,14 @@ outcomes:
         description: Which live question was answered.
       - name: headline
         type: string
-        description: One sentence with the answer.
-      - name: facts
+        description: One short line, the whole answer. Final; use it as written.
+      - name: key_points
         type: array
         item_type: string
-        description: The departures, docks, line statuses or station facilities.
+        description: Up to 3 short phrases, most important first. Final.
       - name: source
         type: string
-        description: Where the live data comes from.
-      - name: as_of
-        type: string
-        description: When the live data was read, as an ISO time.
+        description: Where the data comes from, in a word or two.
       - name: place
         type: string
         required: false
@@ -262,17 +320,14 @@ outcomes:
         description: Which transportation fares question was answered.
       - name: headline
         type: string
-        description: One sentence with the answer.
-      - name: facts
+        description: One short line, the whole answer. Final; use it as written.
+      - name: key_points
         type: array
         item_type: string
-        description: Short supporting facts and caveats.
+        description: Up to 3 short phrases, most important first. Final.
       - name: source
         type: string
-        description: Where the figures come from.
-      - name: as_of
-        type: string
-        description: When the figures apply from, as YYYY-MM or an ISO time.
+        description: Where the data comes from, in a word or two.
       - name: best_option
         type: string
         required: false
@@ -284,14 +339,17 @@ outcomes:
 
   # ── Outdoors ─────────────────────────────────────────────────────────────
   - id: outdoors.walk
-    summary: Whether it is a good time for a walk in London, with rain, temperature, wind, air quality and sunset for the next few hours
+    summary: Whether it is a good time for a walk in London, whether to take an umbrella or extra layers when going out tonight, and rain, wind, air quality and sunset
     example_phrases:
       - is it a good time for a walk
+      - do i need an umbrella tonight
       - will it rain in london
+      - what should i wear to go out
       - how is the air quality in
+      - will it rain when i go out tonight
       - what time is sunset in london
-      - what is the weather like in
-      - do i need an umbrella
+      - is it cold enough for a coat tonight
+      - will it snow tonight
       - is it nice enough to walk in the park
     inputs:
       - name: task
@@ -299,8 +357,10 @@ outcomes:
         required: false
         description: >-
           "walk" if the user asks whether to go for a walk or be outside;
-          "weather" for rain, temperature, wind, air quality or sunset. Return
-          an empty string if unsure.
+          "going_out" if they ask whether to take an umbrella, a coat or extra
+          layers, or what to wear when going out; "weather" for rain,
+          temperature, wind, air quality or sunset. Return an empty string if
+          unsure.
       - name: place
         type: string
         required: false
@@ -319,23 +379,44 @@ outcomes:
         description: >-
           How many hours ahead the user asks about (1 to 24), if they said.
           Leave this out entirely if they did not.
+      - name: tonight
+        type: boolean
+        required: false
+        description: >-
+          True if the user says they are going out tonight or this evening.
+          Leave this out if they did not say.
+      - name: from_time
+        type: string
+        required: false
+        description: >-
+          When the user goes out, as 24-hour HH:MM London time, if they said.
+          Return an empty string if they did not.
+      - name: until_time
+        type: string
+        required: false
+        description: >-
+          When the user will be back, as 24-hour HH:MM London time, if they
+          said. Return an empty string if they did not.
+      - name: cold_below_c
+        type: number
+        required: false
+        description: >-
+          The temperature in Celsius below which the user counts it as cold, if
+          they named one. Leave this out entirely if they did not; never guess.
     output:
       - name: task
         type: string
         description: Which outdoors question was answered.
       - name: headline
         type: string
-        description: One sentence with the answer.
-      - name: facts
+        description: One short line, the whole answer. Final; use it as written.
+      - name: key_points
         type: array
         item_type: string
-        description: Rain, wind, temperature, air quality and daylight details.
+        description: Up to 3 short phrases, most important first. Final.
       - name: source
         type: string
-        description: Where the weather data comes from.
-      - name: as_of
-        type: string
-        description: The forecast hour the answer starts from, as an ISO time.
+        description: Where the data comes from, in a word or two.
       - name: verdict
         type: string
         required: false
@@ -344,6 +425,14 @@ outcomes:
         type: number
         required: false
         description: The temperature now, in Celsius.
+      - name: umbrella_needed
+        type: boolean
+        required: false
+        description: For going out, whether rain or snow is likely while out.
+      - name: wear_more
+        type: boolean
+        required: false
+        description: For going out, whether it will feel colder than the threshold.
 
   # ── Safety ───────────────────────────────────────────────────────────────
   - id: safety.help
@@ -378,17 +467,14 @@ outcomes:
         description: Which safety question was answered.
       - name: headline
         type: string
-        description: One sentence with the answer.
-      - name: facts
+        description: One short line, the whole answer. Final; use it as written.
+      - name: key_points
         type: array
         item_type: string
-        description: Ways to get help, contacts, or crime counts by category.
+        description: Up to 3 short phrases, most important first. Final.
       - name: source
         type: string
-        description: Where the information comes from.
-      - name: as_of
-        type: string
-        description: When the data applies, as YYYY-MM or an ISO time.
+        description: Where the data comes from, in a word or two.
       - name: data_month
         type: string
         required: false
