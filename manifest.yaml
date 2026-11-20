@@ -11,7 +11,7 @@ app_author_name: "peppa-pig"
 app:
   id: hack.app_565f
   name: Pocket Londoner
-  version: 0.1.1
+  version: 0.1.0
   # Never use the word "by" here: the badge is split on it.
   summary: >-
     London helper for Tube, bus and train fares, routes, live delays, walks,
