@@ -21,6 +21,7 @@ OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 CENTRAL_LONDON = (51.5074, -0.1278)
 LONDON_RADIUS_KM = 30
+COVERAGE_RADIUS_KM = 35  # Greater London's edge is 25-30 km out; allow a margin
 GREATER_LONDON_BOX = "-0.52,51.70,0.34,51.28"  # west,north,east,south
 
 
@@ -118,10 +119,18 @@ def _landmark_point(text: str) -> dict:
 
 # --- Resolve ---
 def resolve(text: str) -> dict:
-    """Resolve 'lat,lon', a postcode, an outward code or a place name to {lat, lon, label}."""
+    """Resolve a place to {lat, lon, label}, refusing anywhere outside Greater London."""
     text = (text or "").strip()
     if not text:
         raise refuse(NeedsInput, "Tell me where, for example a place name or a postcode.", "empty location")
+    point = _resolve_anywhere(text)
+    if distance_km(point["lat"], point["lon"], *CENTRAL_LONDON) > COVERAGE_RADIUS_KM:
+        raise refuse(NotFound, f"I only cover London, and {text} is outside it.", f"{text!r} outside coverage")
+    return point
+
+
+def _resolve_anywhere(text: str) -> dict:
+    """Resolve 'lat,lon', a postcode, an outward code or a place name, wherever it is."""
     pair = LATLON.match(text)
     if pair:
         lat, lon = float(pair.group(1)), float(pair.group(2))
