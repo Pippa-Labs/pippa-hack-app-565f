@@ -8,7 +8,7 @@ import urllib.request
 
 from pippa_agentapp_sdk import AgentAppError, RateLimitedError, ServiceUnavailableError
 
-USER_AGENT = "pippa-agent-app-pocket-londoner/0.1 (https://github.com/Pippa-Labs)"
+USER_AGENT = "pippa-agent-app-pocket-londoner/0.1.1 (https://github.com/Pippa-Labs)"
 DEFAULT_TIMEOUT = 6.0
 
 
