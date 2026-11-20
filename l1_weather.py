@@ -32,7 +32,7 @@ WEATHER_CODES = {
 
 HOURLY_FIELDS = (
     "temperature_2m,apparent_temperature,precipitation_probability,precipitation,"
-    "wind_speed_10m,wind_gusts_10m,uv_index,weather_code,is_day"
+    "snowfall,wind_speed_10m,wind_gusts_10m,uv_index,weather_code,is_day"
 )
 
 # European AQI upper bounds and their band names
@@ -88,6 +88,7 @@ def _shape_forecast(hourly: dict, daily: dict, now: datetime, hours: int) -> dic
             "feels_c": _pick(hourly["apparent_temperature"], i),
             "rain_chance": _pick(hourly["precipitation_probability"], i),
             "rain_mm": _pick(hourly["precipitation"], i),
+            "snow_cm": _pick(hourly.get("snowfall", []), i),
             "wind_kmh": _pick(hourly["wind_speed_10m"], i),
             "gust_kmh": _pick(hourly["wind_gusts_10m"], i),
             "uv": _pick(hourly["uv_index"], i),
