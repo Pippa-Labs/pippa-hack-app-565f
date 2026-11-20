@@ -327,7 +327,7 @@ def test_best_ticket_adds_the_oyster_fee_when_there_is_no_card(net):
 
 
 def test_best_ticket_for_buses_only(net):
-    result = call("transportation.fares", {"task": "best_ticket", "bus_only": "true"})
+    result = call("transportation.fares", {"task": "best_ticket", "bus_only": True})
     assert result.data["cost_gbp"] == 26.1
     assert "on buses" in result.data["headline"]
 
@@ -359,7 +359,7 @@ def test_single_fare_can_ask_for_the_peak_price(net):
         "/FareTo/": _fare_sections("2.90", "1.90"),
     })
     result = call("transportation.fares",
-                  {"task": "single_fare", "from_place": "Oxford", "to_place": "Brixton", "peak": "true"})
+                  {"task": "single_fare", "from_place": "Oxford", "to_place": "Brixton", "peak": True})
     assert result.data["cost_gbp"] == 2.9
 
 
